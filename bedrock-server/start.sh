@@ -1,11 +1,6 @@
 #!/bin/bash
 
-mkdir -p /data/plugins /data/logs /data/playit-config
-
-# Persist playit config across restarts
-export HOME=/data
-mkdir -p /data/.config
-ln -sf /data/playit-config /data/.config/playit 2>/dev/null || true
+mkdir -p /data/plugins /data/logs /data/.config/playit_gg
 
 if [ ! -f /data/server.properties ]; then
     cat > /data/server.properties << 'EOF'
@@ -20,22 +15,15 @@ fi
 PHP_BIN=$(find /server/bin -name "php" -type f | head -1)
 echo "Using PHP binary: $PHP_BIN"
 
-# Start web dashboard FIRST so it catches all playit output
+# Start web dashboard FIRST
 python3 /server.py &
 
-# Small delay to ensure server.py is watching before playit writes
 sleep 2
 
-# Run playit and capture ALL output
-echo "[start.sh] Starting playit..." >> /data/logs/playit.log
-/usr/local/bin/playit >> /data/logs/playit.log 2>&1 &
-PLAYIT_PID=$!
-echo "[start.sh] playit PID: $PLAYIT_PID"
-
-# Also dump the first 50 lines of playit output for debugging
-sleep 5
-echo "[start.sh] playit log so far:" >> /data/logs/playit.log
-tail -n 20 /data/logs/playit.log >> /data/logs/playit.log 2>/dev/null || true
+# Run playit inside a pseudo-TTY so the frontend starts and prints the claim link
+# 'script' is already available in debian:bookworm-slim
+script -q -c "/usr/local/bin/playit" /dev/null >> /data/logs/playit.log 2>&1 &
+echo "[start.sh] playit started with pseudo-TTY"
 
 exec "$PHP_BIN" /server/PocketMine-MP.phar \
     --no-wizard \

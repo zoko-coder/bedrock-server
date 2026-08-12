@@ -23,10 +23,8 @@ def follow_file(path, label):
     print(f"[server.py] Watching {path}")
 
     with open(path, "r", encoding="utf-8", errors="replace") as f:
-        # Start from BEGINNING of file to avoid missing early output
-        # then continue tailing. Only do this once at startup.
-        f.seek(0, 0)
-        startup_mode = True
+        # Read from BEGINNING first, then tail
+        read_from_start = True
 
         while True:
             line = f.readline()
@@ -39,36 +37,30 @@ def follow_file(path, label):
                         if len(recent_lines) > 200:
                             recent_lines.pop(0)
 
-                        # Claim link — more flexible regex
+                        # Claim link — flexible regex
                         match = re.search(r'https?://[^\s]*playit\.gg/claim/[^\s"\')]+', line, re.IGNORECASE)
                         if match:
                             claim_link = match.group(0)
                             print(f"[server.py] Claim link found: {claim_link}")
 
                         # Tunnel address — catch ply.gg, joinmc.link, etc.
-                        # Looks for: something.ply.gg:12345 OR something.gl.joinmc.link
                         addr = re.search(r'([a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*\.(?:ply\.gg|joinmc\.link)(?::\d+)?)', line)
                         if addr:
                             tunnel_address = addr.group(1)
-                            # Default Bedrock port if missing
                             if ':' not in tunnel_address:
                                 tunnel_address += ":19132"
                             print(f"[server.py] Tunnel found: {tunnel_address}")
 
-                # After reading all existing lines, switch to tail mode
-                if startup_mode:
-                    # Check if we hit EOF
+                # After consuming all existing lines, switch to tail mode
+                if read_from_start:
                     pos = f.tell()
-                    f.seek(0, 2)  # Go to actual end
-                    end = f.tell()
-                    if pos >= end:
-                        startup_mode = False
-                    f.seek(pos)  # Go back to where we were
-
+                    f.seek(0, 2)
+                    if pos >= f.tell():
+                        read_from_start = False
+                    f.seek(pos)
             else:
-                if startup_mode:
-                    # We've read the whole file, now switch to tail mode
-                    startup_mode = False
+                if read_from_start:
+                    read_from_start = False
                 time.sleep(0.5)
 
 
@@ -100,14 +92,10 @@ class Handler(BaseHTTPRequestHandler):
             <h2>✅ Bedrock Server Running!</h2>
             <p>Add this in Minecraft mobile → Play → Servers → Add Server:</p>
             <table style="border-collapse:collapse;margin:16px 0;width:400px">
-              <tr>
-                <td style="padding:10px;background:#f0f0f0;font-weight:bold">Address</td>
-                <td style="padding:10px;font-family:monospace">{host}</td>
-              </tr>
-              <tr>
-                <td style="padding:10px;background:#f0f0f0;font-weight:bold">Port</td>
-                <td style="padding:10px;font-family:monospace">{port}</td>
-              </tr>
+              <tr><td style="padding:10px;background:#f0f0f0;font-weight:bold">Address</td>
+                  <td style="padding:10px;font-family:monospace">{host}</td></tr>
+              <tr><td style="padding:10px;background:#f0f0f0;font-weight:bold">Port</td>
+                  <td style="padding:10px;font-family:monospace">{port}</td></tr>
             </table>
             <script>setTimeout(()=>location.reload(), 15000)</script>
             {logs_html}
@@ -146,7 +134,6 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-# Watch both log files in separate threads
 threading.Thread(target=follow_file, args=(PMMP_LOG, "PMMP"), daemon=True).start()
 threading.Thread(target=follow_file, args=(PLAYIT_LOG, "PLAYIT"), daemon=True).start()
 

@@ -11,13 +11,13 @@ RUN apk add --no-cache \
 
 WORKDIR /server
 
-# Correct filename — PHP 8.2 recommended for PM5
 RUN wget -q https://github.com/pmmp/PHP-Binaries/releases/download/pm5-php-8.2-latest/PHP-8.2-Linux-x86_64-PM5.tar.gz \
     -O /tmp/php.tar.gz && \
     tar -xzf /tmp/php.tar.gz -C /server && \
-    rm /tmp/php.tar.gz
+    rm /tmp/php.tar.gz && \
+    find /server/bin -name "php" && \
+    echo "=== PHP BINARY FOUND AT ABOVE PATH ==="
 
-# PocketMine-MP
 RUN wget -q https://github.com/pmmp/PocketMine-MP/releases/latest/download/PocketMine-MP.phar \
     -O /server/PocketMine-MP.phar
 

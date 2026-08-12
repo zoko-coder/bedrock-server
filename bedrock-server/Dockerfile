@@ -1,20 +1,23 @@
-FROM php:8.2-cli
+FROM alpine:3.19
 
-RUN apt-get update && apt-get install -y \
+RUN apk add --no-cache \
     wget \
     curl \
     python3 \
-    libzip-dev \
-    libgmp-dev \
-    libyaml-dev \
-    && docker-php-ext-install zip gmp \
-    && pecl install yaml \
-    && docker-php-ext-enable yaml \
-    && rm -rf /var/lib/apt/lists/*
+    ca-certificates \
+    libstdc++ \
+    libgcc \
+    bash
 
 WORKDIR /server
 
-# Download PocketMine-MP
+# PocketMine's own PHP binary (has all extensions built in)
+RUN wget -q https://github.com/pmmp/PHP-Binaries/releases/latest/download/PHP-Linux-x86_64-PM5.tar.gz \
+    -O /tmp/php.tar.gz && \
+    tar -xzf /tmp/php.tar.gz -C /server && \
+    rm /tmp/php.tar.gz
+
+# PocketMine-MP
 RUN wget -q https://github.com/pmmp/PocketMine-MP/releases/latest/download/PocketMine-MP.phar \
     -O /server/PocketMine-MP.phar
 

@@ -14,18 +14,19 @@ WORKDIR /server
 RUN wget -q https://github.com/pmmp/PHP-Binaries/releases/download/pm5-php-8.2-latest/PHP-8.2-Linux-x86_64-PM5.tar.gz \
     -O /tmp/php.tar.gz && \
     tar -xzf /tmp/php.tar.gz -C /server && \
-    rm /tmp/php.tar.gz && \
-    find /server/bin -name "php" && \
-    echo "=== PHP BINARY FOUND ==="
+    rm /tmp/php.tar.gz
 
 RUN wget -q https://github.com/pmmp/PocketMine-MP/releases/latest/download/PocketMine-MP.phar \
     -O /server/PocketMine-MP.phar
 
-COPY playit-linux-amd64 /usr/local/bin/playit
+# playit v0.17.1 — last version that prints claim link without TTY
+RUN wget -q https://github.com/playit-cloud/playit-agent/releases/download/v0.17.1/playit-linux-amd64 \
+    -O /usr/local/bin/playit && chmod +x /usr/local/bin/playit
+
 COPY start.sh /start.sh
 COPY server.py /server.py
 
-RUN chmod +x /start.sh /usr/local/bin/playit
+RUN chmod +x /start.sh
 
 EXPOSE 19132/udp
 

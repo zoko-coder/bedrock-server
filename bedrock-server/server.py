@@ -23,7 +23,7 @@ def follow_file(path, label):
     print(f"[server.py] Watching {path}")
 
     with open(path, "r", encoding="utf-8", errors="replace") as f:
-        # Read from BEGINNING first, then tail
+        # Read entire file first, then tail
         read_from_start = True
 
         while True:
@@ -37,13 +37,13 @@ def follow_file(path, label):
                         if len(recent_lines) > 200:
                             recent_lines.pop(0)
 
-                        # Claim link — flexible regex
+                        # Claim link
                         match = re.search(r'https?://[^\s]*playit\.gg/claim/[^\s"\')]+', line, re.IGNORECASE)
                         if match:
                             claim_link = match.group(0)
                             print(f"[server.py] Claim link found: {claim_link}")
 
-                        # Tunnel address — catch ply.gg, joinmc.link, etc.
+                        # Tunnel address
                         addr = re.search(r'([a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*\.(?:ply\.gg|joinmc\.link)(?::\d+)?)', line)
                         if addr:
                             tunnel_address = addr.group(1)
@@ -51,7 +51,6 @@ def follow_file(path, label):
                                 tunnel_address += ":19132"
                             print(f"[server.py] Tunnel found: {tunnel_address}")
 
-                # After consuming all existing lines, switch to tail mode
                 if read_from_start:
                     pos = f.tell()
                     f.seek(0, 2)

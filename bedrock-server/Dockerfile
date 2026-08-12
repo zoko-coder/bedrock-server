@@ -1,12 +1,8 @@
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y \
-    wget \
-    curl \
-    python3 \
-    ca-certificates \
-    libstdc++6 \
-    libgcc-s1 \
+    wget curl python3 ca-certificates \
+    libstdc++6 libgcc-s1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /server
@@ -19,15 +15,16 @@ RUN wget -q https://github.com/pmmp/PHP-Binaries/releases/download/pm5-php-8.2-l
 RUN wget -q https://github.com/pmmp/PocketMine-MP/releases/latest/download/PocketMine-MP.phar \
     -O /server/PocketMine-MP.phar
 
-# playit v0.17.1 — last version that prints claim link without TTY
 RUN wget -q https://github.com/playit-cloud/playit-agent/releases/download/v0.17.1/playit-linux-amd64 \
     -O /usr/local/bin/playit && chmod +x /usr/local/bin/playit
 
+# Pre-bake the playit secret so it skips the claim link
+RUN mkdir -p /root/.config/playit_gg
+COPY playit.toml /root/.config/playit_gg/playit.toml
+
 COPY start.sh /start.sh
 COPY server.py /server.py
-
 RUN chmod +x /start.sh
 
 EXPOSE 19132/udp
-
 CMD ["/start.sh"]

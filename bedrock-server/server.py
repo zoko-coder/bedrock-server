@@ -120,8 +120,8 @@ class Handler(BaseHTTPRequestHandler):
             html = f"""
             <html><body style="font-family:sans-serif;padding:40px;max-width:800px">
             <h2>⏳ Server Starting...</h2>
-            <p>Waiting for playit to generate claim link or tunnel...</p>
-            <p>Auto-refreshing every 8 seconds...</p>
+            <p>Playit is connecting with your saved secret...</p>
+            <p>Tunnel should appear shortly. Auto-refreshing every 8 seconds...</p>
             <script>setTimeout(()=>location.reload(), 8000)</script>
             {logs_html}
             </body></html>

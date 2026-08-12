@@ -1,13 +1,13 @@
-FROM alpine:3.19
+FROM debian:bookworm-slim
 
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y \
     wget \
     curl \
     python3 \
     ca-certificates \
-    libstdc++ \
-    libgcc \
-    bash
+    libstdc++6 \
+    libgcc-s1 \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /server
 
@@ -16,7 +16,7 @@ RUN wget -q https://github.com/pmmp/PHP-Binaries/releases/download/pm5-php-8.2-l
     tar -xzf /tmp/php.tar.gz -C /server && \
     rm /tmp/php.tar.gz && \
     find /server/bin -name "php" && \
-    echo "=== PHP BINARY FOUND AT ABOVE PATH ==="
+    echo "=== PHP BINARY FOUND ==="
 
 RUN wget -q https://github.com/pmmp/PocketMine-MP/releases/latest/download/PocketMine-MP.phar \
     -O /server/PocketMine-MP.phar

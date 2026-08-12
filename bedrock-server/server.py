@@ -17,15 +17,12 @@ def follow_file(path, label):
     global claim_link, tunnel_address
 
     while not os.path.exists(path):
-        time.sleep(1)
-        print(f"[server.py] Waiting for {path}...")
+        time.sleep(2)
 
     print(f"[server.py] Watching {path}")
 
     with open(path, "r", encoding="utf-8", errors="replace") as f:
-        # Read entire file first, then tail
         read_from_start = True
-
         while True:
             line = f.readline()
             if line:
@@ -37,19 +34,17 @@ def follow_file(path, label):
                         if len(recent_lines) > 200:
                             recent_lines.pop(0)
 
-                        # Claim link
                         match = re.search(r'https?://[^\s]*playit\.gg/claim/[^\s"\')]+', line, re.IGNORECASE)
                         if match:
                             claim_link = match.group(0)
-                            print(f"[server.py] Claim link found: {claim_link}")
+                            print(f"[server.py] Claim link: {claim_link}")
 
-                        # Tunnel address
                         addr = re.search(r'([a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*\.(?:ply\.gg|joinmc\.link)(?::\d+)?)', line)
                         if addr:
                             tunnel_address = addr.group(1)
                             if ':' not in tunnel_address:
                                 tunnel_address += ":19132"
-                            print(f"[server.py] Tunnel found: {tunnel_address}")
+                            print(f"[server.py] Tunnel: {tunnel_address}")
 
                 if read_from_start:
                     pos = f.tell()
@@ -103,15 +98,13 @@ class Handler(BaseHTTPRequestHandler):
         elif link:
             html = f"""
             <html><body style="font-family:sans-serif;padding:40px;max-width:800px">
-            <h2>🔗 Almost ready — claim your tunnel</h2>
-            <p>Click below to claim your playit.gg tunnel, then come back here:</p>
+            <h2>🔗 Claim your tunnel</h2>
             <a href="{link}" target="_blank"
                style="display:inline-block;font-size:1.1em;background:#5865f2;
                       color:white;padding:12px 24px;border-radius:6px;
                       text-decoration:none;margin:16px 0">
                Claim Tunnel →
             </a>
-            <p>Page auto-refreshes every 8 seconds after claiming.</p>
             <script>setTimeout(()=>location.reload(), 8000)</script>
             {logs_html}
             </body></html>
@@ -121,7 +114,6 @@ class Handler(BaseHTTPRequestHandler):
             <html><body style="font-family:sans-serif;padding:40px;max-width:800px">
             <h2>⏳ Server Starting...</h2>
             <p>Playit is connecting with your saved secret...</p>
-            <p>Tunnel should appear shortly. Auto-refreshing every 8 seconds...</p>
             <script>setTimeout(()=>location.reload(), 8000)</script>
             {logs_html}
             </body></html>

@@ -11,8 +11,8 @@ RUN apk add --no-cache \
 
 WORKDIR /server
 
-# PocketMine's own PHP binary (has all extensions built in)
-RUN wget -q https://github.com/pmmp/PHP-Binaries/releases/latest/download/PHP-Linux-x86_64-PM5.tar.gz \
+# Correct filename — PHP 8.2 recommended for PM5
+RUN wget -q https://github.com/pmmp/PHP-Binaries/releases/download/pm5-php-8.2-latest/PHP-8.2-Linux-x86_64-PM5.tar.gz \
     -O /tmp/php.tar.gz && \
     tar -xzf /tmp/php.tar.gz -C /server && \
     rm /tmp/php.tar.gz

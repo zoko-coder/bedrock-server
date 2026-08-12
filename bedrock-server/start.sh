@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 mkdir -p /data/plugins /data/logs
 
@@ -18,8 +18,8 @@ python3 /server.py &
 # Start playit tunnel in background
 playit &
 
-# Use PocketMine's own PHP binary
-exec /server/bin/php7/bin/php /server/PocketMine-MP.phar \
+# Use PocketMine's bundled PHP binary
+exec /server/bin/php8/bin/php /server/PocketMine-MP.phar \
     --no-wizard \
     --data=/data \
     --plugins=/data/plugins

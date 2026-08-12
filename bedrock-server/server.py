@@ -1,6 +1,7 @@
 import os
 import re
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT = int(os.environ.get("PORT", 10000))
@@ -14,38 +15,60 @@ link_lock = threading.Lock()
 
 def follow_file(path, label):
     global claim_link, tunnel_address
-    import time
 
     while not os.path.exists(path):
-        time.sleep(2)
+        time.sleep(1)
         print(f"[server.py] Waiting for {path}...")
 
     print(f"[server.py] Watching {path}")
 
-    with open(path, "r") as f:
-        f.seek(0, 2)
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        # Start from BEGINNING of file to avoid missing early output
+        # then continue tailing. Only do this once at startup.
+        f.seek(0, 0)
+        startup_mode = True
+
         while True:
             line = f.readline()
             if line:
                 line = line.strip()
-                print(f"[{label}] {line}")
-                with link_lock:
-                    recent_lines.append(f"[{label}] {line}")
-                    if len(recent_lines) > 100:
-                        recent_lines.pop(0)
+                if line:
+                    print(f"[{label}] {line}")
+                    with link_lock:
+                        recent_lines.append(f"[{label}] {line}")
+                        if len(recent_lines) > 200:
+                            recent_lines.pop(0)
 
-                    # Claim link
-                    match = re.search(r'(https://playit\.gg/claim/[^\s]+)', line)
-                    if match:
-                        claim_link = match.group(1)
-                        print(f"[server.py] Claim link: {claim_link}")
+                        # Claim link — more flexible regex
+                        match = re.search(r'https?://[^\s]*playit\.gg/claim/[^\s"\')]+', line, re.IGNORECASE)
+                        if match:
+                            claim_link = match.group(0)
+                            print(f"[server.py] Claim link found: {claim_link}")
 
-                    # Tunnel address
-                    addr = re.search(r'(\S+\.ply\.gg:\d+)', line)
-                    if addr:
-                        tunnel_address = addr.group(1)
-                        print(f"[server.py] Tunnel: {tunnel_address}")
+                        # Tunnel address — catch ply.gg, joinmc.link, etc.
+                        # Looks for: something.ply.gg:12345 OR something.gl.joinmc.link
+                        addr = re.search(r'([a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*\.(?:ply\.gg|joinmc\.link)(?::\d+)?)', line)
+                        if addr:
+                            tunnel_address = addr.group(1)
+                            # Default Bedrock port if missing
+                            if ':' not in tunnel_address:
+                                tunnel_address += ":19132"
+                            print(f"[server.py] Tunnel found: {tunnel_address}")
+
+                # After reading all existing lines, switch to tail mode
+                if startup_mode:
+                    # Check if we hit EOF
+                    pos = f.tell()
+                    f.seek(0, 2)  # Go to actual end
+                    end = f.tell()
+                    if pos >= end:
+                        startup_mode = False
+                    f.seek(pos)  # Go back to where we were
+
             else:
+                if startup_mode:
+                    # We've read the whole file, now switch to tail mode
+                    startup_mode = False
                 time.sleep(0.5)
 
 
@@ -62,15 +85,16 @@ class Handler(BaseHTTPRequestHandler):
 
         logs_html = ""
         if lines:
-            log_text = "\n".join(lines[-40:])
+            log_text = "\n".join(lines[-50:])
             logs_html = f"""
             <h3>📄 Live Logs</h3>
             <pre style="background:#111;color:#0f0;padding:16px;
                         border-radius:6px;font-size:12px;
-                        overflow-x:auto;white-space:pre-wrap">{log_text}</pre>
+                        overflow-x:auto;white-space:pre-wrap;max-height:400px">{log_text}</pre>
             """
 
         if tunnel:
+            host, port = tunnel.rsplit(":", 1) if ":" in tunnel else (tunnel, "19132")
             html = f"""
             <html><body style="font-family:sans-serif;padding:40px;max-width:800px">
             <h2>✅ Bedrock Server Running!</h2>
@@ -78,11 +102,11 @@ class Handler(BaseHTTPRequestHandler):
             <table style="border-collapse:collapse;margin:16px 0;width:400px">
               <tr>
                 <td style="padding:10px;background:#f0f0f0;font-weight:bold">Address</td>
-                <td style="padding:10px;font-family:monospace">{tunnel.split(':')[0]}</td>
+                <td style="padding:10px;font-family:monospace">{host}</td>
               </tr>
               <tr>
                 <td style="padding:10px;background:#f0f0f0;font-weight:bold">Port</td>
-                <td style="padding:10px;font-family:monospace">{tunnel.split(':')[1]}</td>
+                <td style="padding:10px;font-family:monospace">{port}</td>
               </tr>
             </table>
             <script>setTimeout(()=>location.reload(), 15000)</script>
@@ -109,6 +133,7 @@ class Handler(BaseHTTPRequestHandler):
             html = f"""
             <html><body style="font-family:sans-serif;padding:40px;max-width:800px">
             <h2>⏳ Server Starting...</h2>
+            <p>Waiting for playit to generate claim link or tunnel...</p>
             <p>Auto-refreshing every 8 seconds...</p>
             <script>setTimeout(()=>location.reload(), 8000)</script>
             {logs_html}

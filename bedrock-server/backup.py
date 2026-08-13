@@ -183,119 +183,119 @@ class BDSBackup:
         return None
 
     def perform_backup(self):
-    with self.lock:
-        level = self.get_level_name()
-        world_path = os.path.join('/data/worlds', level)
+        with self.lock:
+            level = self.get_level_name()
+            world_path = os.path.join('/data/worlds', level)
 
-        if not os.path.exists(world_path):
-            print(f"[Backup] World not found: {world_path}")
-            return
+            if not os.path.exists(world_path):
+                print(f"[Backup] World not found: {world_path}")
+                return
 
-        # Don't back up empty or newly created worlds
-        world_size = sum(
-            os.path.getsize(os.path.join(dp, f))
-            for dp, dn, filenames in os.walk(world_path)
-            for f in filenames
-        )
-
-        if world_size < 1024 * 1024:  # Less than 1 MB
-            print(
-                f"[Backup] World too small "
-                f"({world_size} bytes), skipping backup"
+            # Don't back up empty or newly created worlds
+            world_size = sum(
+                os.path.getsize(os.path.join(dp, f))
+                for dp, dn, filenames in os.walk(world_path)
+                for f in filenames
             )
-            return
 
-        print(f"[Backup] World size: {world_size / 1024 / 1024:.1f} MB")
+            if world_size < 1024 * 1024:  # Less than 1 MB
+                print(
+                    f"[Backup] World too small "
+                    f"({world_size} bytes), skipping backup"
+                )
+                return
 
-        # Only update the backup timestamp if we're actually creating a backup
-        self.last_backup = time.time()
+            print(f"[Backup] World size: {world_size / 1024 / 1024:.1f} MB")
 
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        name = f"bds_{timestamp}"
-        zip_path = os.path.join(TEMP_DIR, f"{name}.zip")
-        chunk_dir = os.path.join(TEMP_DIR, name)
+            # Only update the backup timestamp if we're actually creating a backup
+            self.last_backup = time.time()
 
-        try:
-            self.compress_world(world_path, zip_path)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            name = f"bds_{timestamp}"
+            zip_path = os.path.join(TEMP_DIR, f"{name}.zip")
+            chunk_dir = os.path.join(TEMP_DIR, name)
 
-            with open(zip_path, 'rb') as f:
-                file_hash = hashlib.md5(f.read()).hexdigest()
+            try:
+                self.compress_world(world_path, zip_path)
 
-            chunks = self.split_file(zip_path, chunk_dir)
-            total = len(chunks)
+                with open(zip_path, 'rb') as f:
+                    file_hash = hashlib.md5(f.read()).hexdigest()
 
-            file_ids, msg_ids = [], []
-            for i, chunk in enumerate(chunks):
-                caption = (
-                    f"📦 <b>BDS Backup Chunk</b>\n"
-                    f"Backup: <code>{name}</code>\n"
-                    f"Part: {i + 1}/{total}\n"
+                chunks = self.split_file(zip_path, chunk_dir)
+                total = len(chunks)
+
+                file_ids, msg_ids = [], []
+                for i, chunk in enumerate(chunks):
+                    caption = (
+                        f"📦 <b>BDS Backup Chunk</b>\n"
+                        f"Backup: <code>{name}</code>\n"
+                        f"Part: {i + 1}/{total}\n"
+                        f"Level: {level}\n"
+                        f"Hash: <code>{file_hash}</code>"
+                    )
+
+                    res = self.upload_chunk(chunk, caption)
+
+                    if res.get('ok'):
+                        msg_id = res['result']['message_id']
+                        file_id = res['result']['document']['file_id']
+                        msg_ids.append(msg_id)
+                        file_ids.append(file_id)
+                        print(f"[Backup] Uploaded {i + 1}/{total} msg={msg_id}")
+                    else:
+                        print(f"[Backup] Upload failed: {res}")
+                        self.send_text(
+                            f"❌ Backup {name} failed at part {i + 1}"
+                        )
+                        return
+
+                    time.sleep(1)
+
+                manifest_text = (
+                    f"📋 <b>BACKUP MANIFEST</b>\n"
+                    f"Name: <code>{name}</code>\n"
                     f"Level: {level}\n"
-                    f"Hash: <code>{file_hash}</code>"
+                    f"Parts: {total}\n"
+                    f"Hash: <code>{file_hash}</code>\n"
+                    f"FileIDs: {','.join(file_ids)}"
                 )
 
-                res = self.upload_chunk(chunk, caption)
+                manifest = self.send_text(manifest_text)
+                manifest_id = None
 
-                if res.get('ok'):
-                    msg_id = res['result']['message_id']
-                    file_id = res['result']['document']['file_id']
-                    msg_ids.append(msg_id)
-                    file_ids.append(file_id)
-                    print(f"[Backup] Uploaded {i + 1}/{total} msg={msg_id}")
-                else:
-                    print(f"[Backup] Upload failed: {res}")
-                    self.send_text(
-                        f"❌ Backup {name} failed at part {i + 1}"
-                    )
-                    return
+                if manifest.get('ok'):
+                    manifest_id = manifest['result']['message_id']
+                    self.unpin_all()
+                    self.pin_message(manifest_id)
+                    print(f"[Backup] Manifest pinned: {manifest_id}")
 
-                time.sleep(1)
+                record = {
+                    'name': name,
+                    'timestamp': timestamp,
+                    'level': level,
+                    'parts': total,
+                    'msg_ids': msg_ids,
+                    'file_ids': file_ids,
+                    'manifest_id': manifest_id,
+                    'hash': file_hash
+                }
 
-            manifest_text = (
-                f"📋 <b>BACKUP MANIFEST</b>\n"
-                f"Name: <code>{name}</code>\n"
-                f"Level: {level}\n"
-                f"Parts: {total}\n"
-                f"Hash: <code>{file_hash}</code>\n"
-                f"FileIDs: {','.join(file_ids)}"
-            )
+                self.state['backups'].append(record)
+                self.clean_old_backups()
+                self.save_state()
 
-            manifest = self.send_text(manifest_text)
-            manifest_id = None
+                self.send_text(
+                    f"✅ Backup complete: <code>{name}</code> ({total} parts)"
+                )
 
-            if manifest.get('ok'):
-                manifest_id = manifest['result']['message_id']
-                self.unpin_all()
-                self.pin_message(manifest_id)
-                print(f"[Backup] Manifest pinned: {manifest_id}")
+                print(f"[Backup] Complete: {name}")
 
-            record = {
-                'name': name,
-                'timestamp': timestamp,
-                'level': level,
-                'parts': total,
-                'msg_ids': msg_ids,
-                'file_ids': file_ids,
-                'manifest_id': manifest_id,
-                'hash': file_hash
-            }
+            finally:
+                if os.path.exists(zip_path):
+                    os.remove(zip_path)
 
-            self.state['backups'].append(record)
-            self.clean_old_backups()
-            self.save_state()
-
-            self.send_text(
-                f"✅ Backup complete: <code>{name}</code> ({total} parts)"
-            )
-
-            print(f"[Backup] Complete: {name}")
-
-        finally:
-            if os.path.exists(zip_path):
-                os.remove(zip_path)
-
-            if os.path.exists(chunk_dir):
-                shutil.rmtree(chunk_dir)
+                if os.path.exists(chunk_dir):
+                    shutil.rmtree(chunk_dir)
 
     def clean_old_backups(self):
         backups = self.state['backups']

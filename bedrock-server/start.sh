@@ -1,37 +1,46 @@
 #!/bin/bash
 
-mkdir -p /data/plugins /data/logs
+mkdir -p /data/logs
 
-if [ ! -f /data/server.properties ]; then
-    cat > /data/server.properties << 'EOF'
-motd=My Bedrock Server
-server-port=19132
-max-players=10
-gamemode=survival
-difficulty=normal
-EOF
+# Copy Bedrock Server files to /data on first run
+# (worlds, server.properties, and libraries live here)
+if [ ! -f /data/bedrock_server ]; then
+    echo "[start.sh] Copying Bedrock Server to /data..."
+    cp -r /server/bedrock/* /data/
 fi
 
-PHP_BIN=$(find /server/bin -name "php" -type f | head -1)
-echo "Using PHP binary: $PHP_BIN"
+# Create server.properties if missing
+if [ ! -f /data/server.properties ]; then
+    cat > /data/server.properties << 'EOF'
+server-name=My Bedrock Server
+gamemode=survival
+difficulty=normal
+allow-cheats=false
+max-players=10
+server-port=19132
+server-portv6=19133
+level-name=Bedrock level
+online-mode=true
+white-list=false
+view-distance=32
+tick-distance=4
+player-idle-timeout=30
+EOF
+fi
 
 # Start web dashboard
 python3 /server.py &
 
 sleep 2
 
-# Start playit inside a detached tmux session with a real TTY
-# -d = detached, -s = session name
+# Start playit (your working tmux setup)
 tmux new-session -d -s playit \
     'export TERM=xterm; /usr/local/bin/playit >> /data/logs/playit.log 2>&1'
-
-echo "[start.sh] playit started inside tmux session"
-
-# Also tail tmux's own log just in case
 tmux pipe-pane -t playit -o 'cat >> /data/logs/playit.log'
 
-# Start PocketMine-MP with log redirection
-exec "$PHP_BIN" /server/PocketMine-MP.phar \
-    --no-wizard \
-    --data=/data \
-    --plugins=/data/plugins >> /data/logs/server.log 2>&1
+echo "[start.sh] playit started"
+
+# Start Bedrock Dedicated Server
+cd /data
+echo "[start.sh] Starting Bedrock Server..."
+LD_LIBRARY_PATH=. ./bedrock_server >> /data/logs/server.log 2>&1

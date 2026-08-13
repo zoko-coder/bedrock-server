@@ -1,7 +1,19 @@
 #!/bin/bash
 
-mkdir -p /data/plugins /data/logs /data/worlds
+mkdir -p /data/logs /data/worlds
 
+# Copy BDS binaries on first run
+if [ ! -f /data/bedrock_server ]; then
+    echo "[start.sh] Copying Bedrock Server binaries to /data..."
+    cp -r /server/bedrock/* /data/
+    echo "[start.sh] Copied files:"
+    ls -la /data/bedrock_server /data/*.so 2>/dev/null || ls -la /data/
+fi
+
+# Accept EULA
+echo "eula=true" > /data/eula.txt
+
+# Create server.properties if missing
 if [ ! -f /data/server.properties ]; then
     cat > /data/server.properties << 'EOF'
 server-name=My Bedrock Server
@@ -31,20 +43,27 @@ server-authoritative-block-breaking=false
 EOF
 fi
 
-echo "eula=true" > /data/eula.txt
+LEVEL_NAME=$(grep '^level-name=' /data/server.properties | cut -d'=' -f2)
+WORLD_PATH="/data/worlds/$LEVEL_NAME"
+echo "[start.sh] World path: $WORLD_PATH"
 
 # Start web dashboard
 python3 /server.py &
 
 sleep 2
 
-# Restore world from Telegram if missing
-LEVEL_NAME=$(grep '^level-name=' /data/server.properties | cut -d'=' -f2)
-WORLD_PATH="/data/worlds/$LEVEL_NAME"
-
+# Restore from Telegram only if world is truly missing
 if [ ! -d "$WORLD_PATH" ] || [ -z "$(ls -A "$WORLD_PATH" 2>/dev/null)" ]; then
-    echo "[start.sh] World missing, attempting Telegram restore..."
-    python3 /backup.py restore || echo "[start.sh] Restore skipped"
+    echo "[start.sh] World missing, checking Telegram..."
+    python3 /backup.py restore
+    RESTORE_STATUS=$?
+    if [ $RESTORE_STATUS -eq 0 ]; then
+        echo "[start.sh] World restored from Telegram"
+    else
+        echo "[start.sh] No backup found — BDS will create new world on first run"
+    fi
+else
+    echo "[start.sh] World exists, skipping restore"
 fi
 
 # Start playit
@@ -59,5 +78,7 @@ echo "[start.sh] Backup daemon started"
 
 # Start Bedrock Server
 cd /data
-echo "[start.sh] Starting Bedrock Server..."
-LD_LIBRARY_PATH=. ./bedrock_server >> /data/logs/server.log 2>&1
+echo "[start.sh] Starting Bedrock Server from $(pwd)..."
+echo "[start.sh] bedrock_server exists: $(test -f ./bedrock_server && echo YES || echo NO)"
+export LD_LIBRARY_PATH=.
+./bedrock_server >> /data/logs/server.log 2>&1

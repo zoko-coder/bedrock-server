@@ -2,7 +2,12 @@
 
 mkdir -p /data/logs /data/worlds
 
-# Copy BDS binaries on first run only
+if [ "$FORCE_RESET" = "1" ]; then
+    rm -rf /data/worlds /data/server.properties /data/eula.txt
+    echo "[start.sh] Wiped world and config for fresh start"
+fi
+
+# Copy BDS binaries on first run
 if [ ! -f /data/bedrock_server ]; then
     echo "[start.sh] Copying Bedrock Server to /data..."
     cp -r /server/bedrock/* /data/
@@ -11,7 +16,7 @@ fi
 # Accept EULA
 echo "eula=true" > /data/eula.txt
 
-# Create server.properties ONLY if missing (don't overwrite existing world settings!)
+# Create server.properties ONLY if missing — don't overwrite every restart!
 if [ ! -f /data/server.properties ]; then
     cat > /data/server.properties << 'EOF'
 server-name=My Bedrock Server
@@ -26,8 +31,8 @@ online-mode=false
 white-list=false
 allow-list=false
 view-distance=6
-tick-distance=2
-player-idle-timeout=5
+tick-distance=4
+player-idle-timeout=30
 default-player-permission-level=member
 texturepack-required=false
 content-log-file-enabled=false
@@ -38,29 +43,15 @@ player-movement-distance-threshold=0.3
 player-movement-duration-threshold-in-ms=500
 correct-player-movement=false
 server-authoritative-block-breaking=false
+emit-server-telemetry=false
 EOF
     echo "[start.sh] Created server.properties"
 fi
-
-LEVEL_NAME=$(grep '^level-name=' /data/server.properties | cut -d'=' -f2)
-WORLD_PATH="/data/worlds/$LEVEL_NAME"
-echo "[start.sh] World path: $WORLD_PATH"
 
 # Start web dashboard
 python3 /server.py &
 
 sleep 2
-
-# Restore world from Telegram if missing
-if [ ! -d "$WORLD_PATH" ] || [ -z "$(ls -A "$WORLD_PATH" 2>/dev/null)" ]; then
-    echo "[start.sh] World missing, checking Telegram..."
-    python3 /backup.py restore
-    if [ $? -eq 0 ]; then
-        echo "[start.sh] World restored"
-    else
-        echo "[start.sh] No backup — BDS will create new world"
-    fi
-fi
 
 # Start playit
 tmux new-session -d -s playit \
@@ -68,11 +59,8 @@ tmux new-session -d -s playit \
 tmux pipe-pane -t playit -o 'cat >> /data/logs/playit.log'
 echo "[start.sh] playit started"
 
-# Start backup daemon
-python3 /backup.py &
-echo "[start.sh] Backup daemon started"
-
 # Start Bedrock Server
 cd /data
 echo "[start.sh] Starting Bedrock Server..."
-LD_LIBRARY_PATH=. ./bedrock_server >> /data/logs/server.log 2>&1
+export LD_LIBRARY_PATH=.
+./bedrock_server >> /data/logs/server.log 2>&1

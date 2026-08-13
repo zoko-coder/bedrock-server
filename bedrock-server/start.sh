@@ -11,7 +11,7 @@ fi
 # Accept EULA
 echo "eula=true" > /data/eula.txt
 
-# Create server.properties ONLY if missing — don't overwrite every restart!
+# Create server.properties ONLY if missing — never overwrite existing settings!
 if [ ! -f /data/server.properties ]; then
     cat > /data/server.properties << 'EOF'
 server-name=My Bedrock Server
@@ -23,7 +23,6 @@ server-port=19132
 server-portv6=19133
 level-name=Bedrock level
 online-mode=false
-white-list=false
 allow-list=false
 view-distance=6
 tick-distance=4
@@ -42,6 +41,11 @@ emit-server-telemetry=false
 EOF
     echo "[start.sh] Created server.properties"
 fi
+
+# CRITICAL: Delete allowlist files that override server.properties
+# If these exist from a previous run, BDS blocks everyone regardless of settings
+rm -f /data/allowlist.json /data/whitelist.json
+echo "[start.sh] Cleared allowlist files"
 
 # Start web dashboard
 python3 /server.py &

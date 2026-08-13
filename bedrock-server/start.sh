@@ -2,11 +2,6 @@
 
 mkdir -p /data/logs /data/worlds
 
-if [ "$FORCE_RESET" = "1" ]; then
-    rm -rf /data/worlds /data/server.properties /data/eula.txt
-    echo "[start.sh] Wiped world and config for fresh start"
-fi
-
 # Copy BDS binaries on first run
 if [ ! -f /data/bedrock_server ]; then
     echo "[start.sh] Copying Bedrock Server to /data..."

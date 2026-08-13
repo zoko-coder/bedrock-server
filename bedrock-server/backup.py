@@ -37,6 +37,7 @@ class BDSBackup:
         self.last_backup = 0
         self.lock = threading.Lock()
         self._stop = False
+        self.telegram_ok = False  # Will be set after startup check
 
     def load_state(self):
         if os.path.exists(STATE_FILE):
@@ -60,6 +61,52 @@ class BDSBackup:
         except:
             pass
         return 'Bedrock level'
+
+    def tg_api(self, method, data=None, files=None, timeout=30):
+        url = f"{self.api}/{method}"
+        try:
+            if files:
+                r = requests.post(url, data=data, files=files, timeout=timeout)
+            else:
+                r = requests.post(url, json=data, timeout=timeout)
+            return r.json()
+        except Exception as e:
+            print(f"[Backup] API error: {e}")
+            return {'ok': False}
+
+    def send_text(self, text):
+        return self.tg_api('sendMessage', data={
+            'chat_id': CHANNEL_ID, 'text': text, 'parse_mode': 'HTML'
+        })
+
+    def startup_check(self):
+        """Verify Telegram bot can reach the channel before doing anything"""
+        if not BOT_TOKEN or not CHANNEL_ID:
+            print("[Backup] ⚠️ TELEGRAM_BOT_TOKEN or TELEGRAM_CHANNEL_ID not set!")
+            print("[Backup] Backups disabled.")
+            return False
+
+        print("[Backup] Checking Telegram connection...")
+        me = self.tg_api('getMe')
+        if not me.get('ok'):
+            print(f"[Backup] ❌ Bot token invalid or Telegram unreachable: {me}")
+            return False
+
+        bot_name = me['result'].get('username', 'unknown')
+        res = self.send_text(
+            f"🟢 <b>BDS Server Started</b>\n"
+            f"Bot: @{bot_name}\n"
+            f"Channel: <code>{CHANNEL_ID}</code>\n"
+            f"Backups will run when server is idle."
+        )
+        if res.get('ok'):
+            print(f"[Backup] ✅ Telegram OK! Bot @{bot_name} connected.")
+            self.telegram_ok = True
+            return True
+        else:
+            print(f"[Backup] ❌ Cannot send to channel: {res}")
+            print("[Backup] Check that the bot is admin in the channel.")
+            return False
 
     def log_watcher(self):
         """Watch BDS logs to track player count"""
@@ -92,6 +139,8 @@ class BDSBackup:
                 time.sleep(5)
 
     def should_backup(self):
+        if not self.telegram_ok:
+            return False
         if self.players:
             return False
         if time.time() - self.last_activity < IDLE_MINUTES * 60:
@@ -130,28 +179,11 @@ class BDSBackup:
         print(f"[Backup] Split into {len(chunks)} chunks")
         return chunks
 
-    def tg_api(self, method, data=None, files=None, timeout=60):
-        url = f"{self.api}/{method}"
-        try:
-            if files:
-                r = requests.post(url, data=data, files=files, timeout=timeout)
-            else:
-                r = requests.post(url, json=data, timeout=timeout)
-            return r.json()
-        except Exception as e:
-            print(f"[Backup] API error: {e}")
-            return {'ok': False}
-
     def upload_chunk(self, chunk_path, caption):
         with open(chunk_path, 'rb') as f:
             files = {'document': f}
             data = {'chat_id': CHANNEL_ID, 'caption': caption, 'parse_mode': 'HTML'}
             return self.tg_api('sendDocument', data=data, files=files)
-
-    def send_text(self, text):
-        return self.tg_api('sendMessage', data={
-            'chat_id': CHANNEL_ID, 'text': text, 'parse_mode': 'HTML'
-        })
 
     def delete_messages(self, message_ids):
         deleted, failed = [], []
@@ -191,23 +223,18 @@ class BDSBackup:
                 print(f"[Backup] World not found: {world_path}")
                 return
 
-            # Don't back up empty or newly created worlds
             world_size = sum(
                 os.path.getsize(os.path.join(dp, f))
                 for dp, dn, filenames in os.walk(world_path)
                 for f in filenames
             )
 
-            if world_size < 1024 * 1024:  # Less than 1 MB
-                print(
-                    f"[Backup] World too small "
-                    f"({world_size} bytes), skipping backup"
-                )
+            if world_size < 1024 * 1024:
+                print(f"[Backup] World too small ({world_size} bytes), skipping backup")
                 return
 
             print(f"[Backup] World size: {world_size / 1024 / 1024:.1f} MB")
 
-            # Only update the backup timestamp if we're actually creating a backup
             self.last_backup = time.time()
 
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -244,9 +271,7 @@ class BDSBackup:
                         print(f"[Backup] Uploaded {i + 1}/{total} msg={msg_id}")
                     else:
                         print(f"[Backup] Upload failed: {res}")
-                        self.send_text(
-                            f"❌ Backup {name} failed at part {i + 1}"
-                        )
+                        self.send_text(f"❌ Backup {name} failed at part {i + 1}")
                         return
 
                     time.sleep(1)
@@ -284,16 +309,12 @@ class BDSBackup:
                 self.clean_old_backups()
                 self.save_state()
 
-                self.send_text(
-                    f"✅ Backup complete: <code>{name}</code> ({total} parts)"
-                )
-
+                self.send_text(f"✅ Backup complete: <code>{name}</code> ({total} parts)")
                 print(f"[Backup] Complete: {name}")
 
             finally:
                 if os.path.exists(zip_path):
                     os.remove(zip_path)
-
                 if os.path.exists(chunk_dir):
                     shutil.rmtree(chunk_dir)
 
@@ -408,11 +429,11 @@ class BDSBackup:
             return False
         file_ids = m.group(1).split(',')
         print(f"[Restore] Manifest IDs: {file_ids}")
-        # Need hash and level info... fallback
         return False
 
     def run(self):
         print("[Backup] Service started")
+        self.startup_check()
         threading.Thread(target=self.log_watcher, daemon=True).start()
         while not self._stop:
             time.sleep(CHECK_INTERVAL)
@@ -426,10 +447,6 @@ class BDSBackup:
 
 
 def main():
-    if not BOT_TOKEN or not CHANNEL_ID:
-        print("[Backup] TELEGRAM_BOT_TOKEN and TELEGRAM_CHANNEL_ID required")
-        sys.exit(1)
-
     bot = BDSBackup()
     if len(sys.argv) > 1 and sys.argv[1] == 'restore':
         success = bot.restore_latest()

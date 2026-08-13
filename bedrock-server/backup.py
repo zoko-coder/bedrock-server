@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 BDS Telegram Backup System
-- Backs up world when no players online
+- Backs up world ONLY after a player has played and left
+- Deduplicates via world signature + content hash
+- Cleans up old Telegram messages (retries + #delete tagging)
 - Restores from Telegram on startup if world missing
 - Chunks to 10MB for Telegram limits
 """
@@ -35,9 +37,10 @@ class BDSBackup:
         self.players = set()
         self.last_activity = time.time()
         self.last_backup = 0
+        self.player_has_played = False  # FIX 1: track if any player joined since last backup
         self.lock = threading.Lock()
         self._stop = False
-        self.telegram_ok = False  # Will be set after startup check
+        self.telegram_ok = False
 
     def load_state(self):
         if os.path.exists(STATE_FILE):
@@ -46,7 +49,11 @@ class BDSBackup:
                     return json.load(f)
             except:
                 pass
-        return {'backups': [], 'pending_deletions': []}
+        return {
+            'backups': [],
+            'pending_deletions': [],
+            'last_world_signature': None
+        }
 
     def save_state(self):
         with open(STATE_FILE, 'w') as f:
@@ -61,6 +68,45 @@ class BDSBackup:
         except:
             pass
         return 'Bedrock level'
+
+    def get_world_signature(self, world_path):
+        """
+        Returns a fingerprint of the world dir.
+        Uses size + file count + max mtime + content hash of recently
+        modified files for robust deduplication.
+        """
+        total_size = 0
+        file_count = 0
+        max_mtime = 0
+        content_hasher = hashlib.md5()
+        recent_files = []  # files modified in last hour, for content hashing
+        now = time.time()
+
+        for dp, dn, filenames in os.walk(world_path):
+            for f in filenames:
+                fp = os.path.join(dp, f)
+                try:
+                    st = os.stat(fp)
+                    total_size += st.st_size
+                    file_count += 1
+                    if st.st_mtime > max_mtime:
+                        max_mtime = st.st_mtime
+                    # Collect recently modified files for content hashing
+                    if now - st.st_mtime < 3600:
+                        recent_files.append(fp)
+                except:
+                    pass
+
+        # Hash content of recent files for stronger dedup
+        for fp in sorted(recent_files)[:50]:  # cap at 50 files to keep it fast
+            try:
+                with open(fp, 'rb') as fh:
+                    content_hasher.update(fh.read(64 * 1024))  # first 64KB
+            except:
+                pass
+
+        content_digest = content_hasher.hexdigest()
+        return (total_size, file_count, round(max_mtime, 2), content_digest)
 
     def tg_api(self, method, data=None, files=None, timeout=30):
         url = f"{self.api}/{method}"
@@ -80,24 +126,21 @@ class BDSBackup:
         })
 
     def startup_check(self):
-        """Verify Telegram bot can reach the channel before doing anything"""
         if not BOT_TOKEN or not CHANNEL_ID:
             print("[Backup] ⚠️ TELEGRAM_BOT_TOKEN or TELEGRAM_CHANNEL_ID not set!")
-            print("[Backup] Backups disabled.")
             return False
 
         print("[Backup] Checking Telegram connection...")
         me = self.tg_api('getMe')
         if not me.get('ok'):
-            print(f"[Backup] ❌ Bot token invalid or Telegram unreachable: {me}")
+            print(f"[Backup] ❌ Bot token invalid: {me}")
             return False
 
         bot_name = me['result'].get('username', 'unknown')
         res = self.send_text(
             f"🟢 <b>BDS Server Started</b>\n"
             f"Bot: @{bot_name}\n"
-            f"Channel: <code>{CHANNEL_ID}</code>\n"
-            f"Backups will run when server is idle."
+            f"Backups will run when world changes & server is idle."
         )
         if res.get('ok'):
             print(f"[Backup] ✅ Telegram OK! Bot @{bot_name} connected.")
@@ -105,11 +148,9 @@ class BDSBackup:
             return True
         else:
             print(f"[Backup] ❌ Cannot send to channel: {res}")
-            print("[Backup] Check that the bot is admin in the channel.")
             return False
 
     def log_watcher(self):
-        """Watch BDS logs to track player count"""
         while not self._stop:
             if not os.path.exists(LOG_FILE):
                 time.sleep(2)
@@ -126,6 +167,7 @@ class BDSBackup:
                             m = re.search(r'Player connected:\s*(\w+)', line)
                             if m:
                                 self.players.add(m.group(1))
+                                self.player_has_played = True  # FIX 1: mark that someone played
                                 self.last_activity = time.time()
                                 print(f"[Backup] +Player {m.group(1)} | total:{len(self.players)}")
                         elif 'Player disconnected:' in line:
@@ -142,6 +184,9 @@ class BDSBackup:
         if not self.telegram_ok:
             return False
         if self.players:
+            return False
+        # FIX 1: Only backup if a player has actually connected since last backup
+        if not self.player_has_played:
             return False
         if time.time() - self.last_activity < IDLE_MINUTES * 60:
             return False
@@ -223,17 +268,22 @@ class BDSBackup:
                 print(f"[Backup] World not found: {world_path}")
                 return
 
-            world_size = sum(
-                os.path.getsize(os.path.join(dp, f))
-                for dp, dn, filenames in os.walk(world_path)
-                for f in filenames
-            )
+            # --- Deduplication via world signature ---
+            current_sig = self.get_world_signature(world_path)
+            last_sig = self.state.get('last_world_signature')
 
-            if world_size < 1024 * 1024:
-                print(f"[Backup] World too small ({world_size} bytes), skipping backup")
+            if last_sig and last_sig == list(current_sig):
+                print(f"[Backup] World unchanged (size={current_sig[0]}, files={current_sig[1]}, hash={current_sig[3][:8]}), skipping")
+                self.player_has_played = False  # Reset — world didn't actually change
                 return
 
-            print(f"[Backup] World size: {world_size / 1024 / 1024:.1f} MB")
+            # Skip if world is basically empty/fresh (< 5 MB = unplayed BDS world)
+            if current_sig[0] < 5 * 1024 * 1024:
+                print(f"[Backup] World too small ({current_sig[0]/1024/1024:.1f} MB < 5 MB threshold), skipping")
+                self.player_has_played = False  # Reset — not a real world
+                return
+
+            print(f"[Backup] World changed! size={current_sig[0]/1024/1024:.1f}MB files={current_sig[1]} hash={current_sig[3][:8]}")
 
             self.last_backup = time.time()
 
@@ -245,8 +295,14 @@ class BDSBackup:
             try:
                 self.compress_world(world_path, zip_path)
 
+                file_hasher = hashlib.md5()
                 with open(zip_path, 'rb') as f:
-                    file_hash = hashlib.md5(f.read()).hexdigest()
+                    while True:
+                        block = f.read(8192)
+                        if not block:
+                            break
+                        file_hasher.update(block)
+                file_hash = file_hasher.hexdigest()
 
                 chunks = self.split_file(zip_path, chunk_dir)
                 total = len(chunks)
@@ -306,7 +362,10 @@ class BDSBackup:
                 }
 
                 self.state['backups'].append(record)
+                self.state['last_world_signature'] = list(current_sig)
+                self.player_has_played = False  # Reset after successful backup
                 self.clean_old_backups()
+                self.retry_pending_deletions()  # FIX 2: retry any previously failed deletions
                 self.save_state()
 
                 self.send_text(f"✅ Backup complete: <code>{name}</code> ({total} parts)")
@@ -319,29 +378,78 @@ class BDSBackup:
                     shutil.rmtree(chunk_dir)
 
     def clean_old_backups(self):
+        """Keep only last 2 backups. Try to delete old ones, tag failures with #delete."""
         backups = self.state['backups']
         if len(backups) <= 2:
             return
 
         to_remove = backups[:-2]
+        kept = backups[-2:]  # always keep latest 2
+
         for old in to_remove:
-            ids = old.get('msg_ids', []) + ([old['manifest_id']] if old.get('manifest_id') else [])
-            deleted, failed = self.delete_messages(ids)
+            all_ids = old.get('msg_ids', []) + ([old['manifest_id']] if old.get('manifest_id') else [])
+            deleted, failed = self.delete_messages(all_ids)
+
+            if deleted:
+                print(f"[Backup] Deleted {len(deleted)} messages for old backup {old['name']}")
 
             if failed:
-                old['pending_delete'] = True
+                # Tag the failed messages with #delete so they can be found manually
+                self._tag_for_deletion(old, failed)
+                # Queue for retry on next backup cycle
                 old['failed_ids'] = failed
+                old['retry_count'] = old.get('retry_count', 0)
+                old['first_failed'] = old.get('first_failed', time.time())
                 self.state['pending_deletions'].append(old)
-                self.send_text(
-                    f"⚠️ <b>Manual Deletion Needed</b>\n"
-                    f"Backup: <code>{old['name']}</code>\n"
-                    f"Failed IDs: <code>{failed}</code>\n"
-                    f"Please delete these messages manually from the channel."
-                )
+                print(f"[Backup] {len(failed)} messages couldn't be deleted for {old['name']}, queued for retry")
 
-            backups.remove(old)
+        self.state['backups'] = kept
 
-        self.state['backups'] = backups[-10:]
+    def _tag_for_deletion(self, backup_record, failed_ids):
+        """
+        Send a #delete tagged message listing un-deletable message IDs.
+        This lets channel admins search for #delete and clean up manually.
+        """
+        self.send_text(
+            f"🗑 #delete\n"
+            f"<b>Old backup needs manual cleanup</b>\n"
+            f"Backup: <code>{backup_record['name']}</code>\n"
+            f"Messages to delete: <code>{', '.join(str(x) for x in failed_ids)}</code>\n"
+            f"<i>Bot cannot delete these (likely older than 48h).</i>\n"
+            f"Search #delete in this channel to find all pending cleanups."
+        )
+
+    def retry_pending_deletions(self):
+        """Retry deleting messages that failed previously."""
+        pending = self.state.get('pending_deletions', [])
+        if not pending:
+            return
+
+        still_pending = []
+        for entry in pending:
+            failed_ids = entry.get('failed_ids', [])
+            if not failed_ids:
+                continue
+
+            retry_count = entry.get('retry_count', 0) + 1
+            entry['retry_count'] = retry_count
+
+            # Stop retrying after 10 attempts (messages are definitely too old)
+            if retry_count > 10:
+                print(f"[Backup] Giving up on deleting {entry.get('name', '?')} after {retry_count} retries")
+                continue
+
+            deleted, failed = self.delete_messages(failed_ids)
+            if deleted:
+                print(f"[Backup] Retry success: deleted {len(deleted)} messages for {entry.get('name', '?')}")
+
+            if failed:
+                entry['failed_ids'] = failed
+                still_pending.append(entry)
+            else:
+                print(f"[Backup] All messages deleted for {entry.get('name', '?')}")
+
+        self.state['pending_deletions'] = still_pending
 
     def download_file(self, file_id, dest_path):
         res = self.tg_api('getFile', data={'file_id': file_id})
@@ -399,8 +507,14 @@ class BDSBackup:
                     with open(part, 'rb') as f:
                         out.write(f.read())
 
+            hash_check = hashlib.md5()
             with open(zip_path, 'rb') as f:
-                actual_hash = hashlib.md5(f.read()).hexdigest()
+                while True:
+                    block = f.read(8192)
+                    if not block:
+                        break
+                    hash_check.update(block)
+            actual_hash = hash_check.hexdigest()
             if actual_hash != expected_hash:
                 print(f"[Restore] Hash mismatch!")
                 return False
@@ -424,12 +538,110 @@ class BDSBackup:
                 os.remove(zip_path)
 
     def _restore_from_manifest(self, text):
-        m = re.search(r'FileIDs:\s*([\w-_,]+)', text)
-        if not m:
+        """Restore world from pinned Telegram manifest when state file is lost (e.g. redeploy)."""
+        # Parse FileIDs
+        fid_match = re.search(r'FileIDs:\s*([\w,_-]+)', text)
+        if not fid_match:
+            print("[Restore] No FileIDs found in manifest")
             return False
-        file_ids = m.group(1).split(',')
-        print(f"[Restore] Manifest IDs: {file_ids}")
-        return False
+        file_ids = [fid.strip() for fid in fid_match.group(1).split(',') if fid.strip()]
+        if not file_ids:
+            print("[Restore] FileIDs list is empty")
+            return False
+
+        # Parse Hash
+        hash_match = re.search(r'Hash:\s*(\w+)', text)
+        expected_hash = hash_match.group(1) if hash_match else None
+
+        # Parse Level name
+        level_match = re.search(r'Level:\s*(.+)', text)
+        level = level_match.group(1).strip() if level_match else self.get_level_name()
+
+        # Parse backup Name
+        name_match = re.search(r'Name:\s*(\S+)', text)
+        name = name_match.group(1).strip() if name_match else 'manifest_restore'
+
+        print(f"[Restore] From manifest: {name} | {len(file_ids)} parts | level={level} | hash={expected_hash or 'none'}")
+        self.send_text(f"🔄 Restoring from manifest: <code>{name}</code> ({len(file_ids)} parts)")
+
+        chunk_dir = os.path.join(TEMP_DIR, 'restore')
+        zip_path = os.path.join(TEMP_DIR, 'restore.zip')
+        os.makedirs(chunk_dir, exist_ok=True)
+
+        try:
+            # Download all chunks
+            for i, fid in enumerate(file_ids):
+                dest = os.path.join(chunk_dir, f"part_{i:03d}")
+                print(f"[Restore] Downloading part {i+1}/{len(file_ids)}...")
+                if not self.download_file(fid, dest):
+                    print(f"[Restore] ❌ Failed to download part {i+1}")
+                    self.send_text(f"❌ Restore failed: couldn't download part {i+1}/{len(file_ids)}")
+                    return False
+                print(f"[Restore] ✓ Downloaded part {i+1}/{len(file_ids)}")
+
+            # Reassemble chunks into zip
+            with open(zip_path, 'wb') as out:
+                for i in range(len(file_ids)):
+                    part = os.path.join(chunk_dir, f"part_{i:03d}")
+                    with open(part, 'rb') as f:
+                        out.write(f.read())
+            print(f"[Restore] Reassembled zip: {os.path.getsize(zip_path)/1024/1024:.1f} MB")
+
+            # Verify hash if available
+            if expected_hash:
+                hash_check = hashlib.md5()
+                with open(zip_path, 'rb') as f:
+                    while True:
+                        block = f.read(8192)
+                        if not block:
+                            break
+                        hash_check.update(block)
+                actual_hash = hash_check.hexdigest()
+                if actual_hash != expected_hash:
+                    print(f"[Restore] ❌ Hash mismatch! expected={expected_hash} got={actual_hash}")
+                    self.send_text(f"❌ Restore failed: hash mismatch")
+                    return False
+                print(f"[Restore] ✓ Hash verified: {actual_hash}")
+
+            # Extract world
+            world_dir = os.path.join('/data/worlds', level)
+            if os.path.exists(world_dir):
+                backup_name = world_dir + '_old_' + str(int(time.time()))
+                shutil.move(world_dir, backup_name)
+                print(f"[Restore] Moved existing world to {backup_name}")
+
+            os.makedirs(world_dir, exist_ok=True)
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                zf.extractall(os.path.dirname(world_dir))
+
+            print(f"[Restore] ✅ World restored to {world_dir}")
+            self.send_text(f"✅ World restored from manifest: <code>{name}</code>")
+
+            # Save this as a known backup in state so next restore doesn't need manifest
+            self.state['backups'].append({
+                'name': name,
+                'timestamp': datetime.now().strftime('%Y%m%d_%H%M%S'),
+                'level': level,
+                'parts': len(file_ids),
+                'msg_ids': [],
+                'file_ids': file_ids,
+                'manifest_id': None,
+                'hash': expected_hash or ''
+            })
+            self.save_state()
+
+            return True
+
+        except Exception as e:
+            print(f"[Restore] ❌ Error: {e}")
+            self.send_text(f"❌ Restore error: {e}")
+            return False
+
+        finally:
+            if os.path.exists(chunk_dir):
+                shutil.rmtree(chunk_dir)
+            if os.path.exists(zip_path):
+                os.remove(zip_path)
 
     def run(self):
         print("[Backup] Service started")
@@ -438,12 +650,12 @@ class BDSBackup:
         while not self._stop:
             time.sleep(CHECK_INTERVAL)
             if self.should_backup():
-                print("[Backup] Conditions met, starting backup...")
+                print("[Backup] Conditions met, checking for changes...")
                 self.perform_backup()
             else:
                 idle = (time.time() - self.last_activity) / 60
                 since = (time.time() - self.last_backup) / 60
-                print(f"[Backup] Skip | players:{len(self.players)} idle:{idle:.0f}min backup:{since:.0f}min")
+                print(f"[Backup] Skip | players:{len(self.players)} played:{self.player_has_played} idle:{idle:.0f}min backup:{since:.0f}min")
 
 
 def main():

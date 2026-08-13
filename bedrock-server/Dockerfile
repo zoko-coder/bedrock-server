@@ -4,7 +4,7 @@ RUN apt-get update && apt-get install -y \
     wget curl unzip \
     python3 python3-requests \
     ca-certificates libcurl4 libssl3 \
-    libstdc++6 libgcc-s1 tmux \
+    libstdc++6 libgcc-s1 procps \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /server
@@ -36,5 +36,6 @@ COPY server.py /server.py
 COPY backup.py /backup.py
 RUN chmod +x /start.sh
 
+VOLUME /data
 EXPOSE 19132/udp
 CMD ["/start.sh"]

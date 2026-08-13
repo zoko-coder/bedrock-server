@@ -9,14 +9,16 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /server
 
-# Unzip BDS to /server/bedrock (handles subfolder automatically)
+# Unzip BDS to /server/bedrock
 COPY bedrock-server.zip /tmp/bedrock.zip
-RUN unzip -q /tmp/bedrock.zip -d /tmp/bedrock-extract && \
-    # Move files up if they're in a subfolder
-    if [ -d /tmp/bedrock-extract/bedrock-server* ]; then \
-        mv /tmp/bedrock-extract/bedrock-server* /server/bedrock; \
+RUN mkdir -p /server/bedrock && \
+    unzip -q /tmp/bedrock.zip -d /tmp/bedrock-extract && \
+    # Check if files are inside a subfolder (bedrock-server-*) and move them up
+    SUBDIR=$(ls /tmp/bedrock-extract | grep -m1 "^bedrock-server" || true) && \
+    if [ -n "$SUBDIR" ] && [ -d "/tmp/bedrock-extract/$SUBDIR" ]; then \
+        mv /tmp/bedrock-extract/"$SUBDIR"/* /server/bedrock/; \
     else \
-        mv /tmp/bedrock-extract/* /server/bedrock; \
+        mv /tmp/bedrock-extract/* /server/bedrock/; \
     fi && \
     rm -rf /tmp/bedrock-extract /tmp/bedrock.zip && \
     chmod +x /server/bedrock/bedrock_server && \

@@ -65,26 +65,64 @@ def follow_file(path, label, target_list, max_lines=80):
                 time.sleep(0.4)
 
 
+START_TIME = time.time()
+
 # ── System metrics ────────────────────────────────────────────────────────────
 
 def get_metrics():
     metrics = {}
 
-    # RAM
+    # RAM (cgroup aware for container limits e.g. Render 512 MB)
     try:
-        with open("/proc/meminfo") as f:
-            mem = {}
-            for line in f:
-                k, v = line.split(":", 1)
-                mem[k.strip()] = int(v.strip().split()[0])
-            total = mem.get("MemTotal", 0)
-            avail = mem.get("MemAvailable", 0)
-            used  = total - avail
-            metrics["ram_used_mb"]  = round(used  / 1024)
-            metrics["ram_total_mb"] = round(total / 1024)
-            metrics["ram_pct"]      = round(used / total * 100) if total else 0
+        ram_used_bytes = 0
+        ram_total_bytes = 0
+
+        # Try cgroup v2
+        if os.path.exists("/sys/fs/cgroup/memory.current"):
+            try:
+                with open("/sys/fs/cgroup/memory.current") as f:
+                    ram_used_bytes = int(f.read().strip())
+                if os.path.exists("/sys/fs/cgroup/memory.max"):
+                    with open("/sys/fs/cgroup/memory.max") as f:
+                        val = f.read().strip()
+                        if val.isdigit():
+                            ram_total_bytes = int(val)
+            except Exception:
+                pass
+        # Try cgroup v1
+        elif os.path.exists("/sys/fs/cgroup/memory/memory.usage_in_bytes"):
+            try:
+                with open("/sys/fs/cgroup/memory/memory.usage_in_bytes") as f:
+                    ram_used_bytes = int(f.read().strip())
+                if os.path.exists("/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+                    with open("/sys/fs/cgroup/memory/memory.limit_in_bytes") as f:
+                        ram_total_bytes = int(f.read().strip())
+            except Exception:
+                pass
+
+        # If cgroup limit is unlimited (> 100 GB) or unavailable, default limit to 512 MB
+        if ram_total_bytes <= 0 or ram_total_bytes > 100 * 1024 * 1024 * 1024:
+            ram_total_bytes = 512 * 1024 * 1024
+
+        if ram_used_bytes <= 0:
+            with open("/proc/meminfo") as f:
+                mem = {}
+                for line in f:
+                    k, v = line.split(":", 1)
+                    mem[k.strip()] = int(v.strip().split()[0])
+                total = mem.get("MemTotal", 0) * 1024
+                avail = mem.get("MemAvailable", 0) * 1024
+                ram_used_bytes = total - avail
+
+        ram_used_mb = round(ram_used_bytes / (1024 * 1024))
+        ram_total_mb = round(ram_total_bytes / (1024 * 1024))
+        ram_pct = round(ram_used_mb / ram_total_mb * 100) if ram_total_mb else 0
+
+        metrics["ram_used_mb"]  = ram_used_mb
+        metrics["ram_total_mb"] = ram_total_mb
+        metrics["ram_pct"]      = min(ram_pct, 100)
     except Exception:
-        metrics.update({"ram_used_mb": 0, "ram_total_mb": 0, "ram_pct": 0})
+        metrics.update({"ram_used_mb": 0, "ram_total_mb": 512, "ram_pct": 0})
 
     # CPU (instant via /proc/stat diff)
     try:
@@ -105,22 +143,34 @@ def get_metrics():
     except Exception:
         metrics["cpu_pct"] = 0
 
-    # Disk
+    # Disk (/data container disk limit or size)
     try:
         st = os.statvfs("/data")
         total = st.f_blocks * st.f_frsize
         free  = st.f_bavail * st.f_frsize
         used  = total - free
-        metrics["disk_used_gb"]  = round(used  / 1024**3, 1)
-        metrics["disk_total_gb"] = round(total / 1024**3, 1)
-        metrics["disk_pct"]      = round(used / total * 100) if total else 0
-    except Exception:
-        metrics.update({"disk_used_gb": 0, "disk_total_gb": 0, "disk_pct": 0})
+        total_gb = round(total / 1024**3, 1)
 
-    # Uptime
+        # If statvfs reports host system disk (> 50 GB), compute actual size of /data
+        if total_gb > 50:
+            try:
+                result = subprocess.check_output(["du", "-sb", "/data"], text=True, stderr=subprocess.DEVNULL)
+                used_bytes = int(result.split()[0])
+            except Exception:
+                used_bytes = used
+            metrics["disk_used_gb"]  = round(used_bytes / 1024**3, 2)
+            metrics["disk_total_gb"] = 1.0
+            metrics["disk_pct"]      = round((used_bytes / (1024**3)) * 100)
+        else:
+            metrics["disk_used_gb"]  = round(used / 1024**3, 1)
+            metrics["disk_total_gb"] = total_gb
+            metrics["disk_pct"]      = round(used / total * 100) if total else 0
+    except Exception:
+        metrics.update({"disk_used_gb": 0, "disk_total_gb": 1.0, "disk_pct": 0})
+
+    # Uptime (container service uptime since script boot)
     try:
-        with open("/proc/uptime") as f:
-            secs = float(f.read().split()[0])
+        secs = time.time() - START_TIME
         h = int(secs // 3600)
         m = int((secs % 3600) // 60)
         metrics["uptime"] = f"{h}h {m}m"

@@ -20,15 +20,17 @@ python3 /server.py &
 
 sleep 2
 
-# Start playit with a restart loop (if it ever crashes, it comes back)
-while true; do
-    echo "[start.sh] Starting playit..."
-    /usr/local/bin/playit >> /data/logs/playit.log 2>&1
-    echo "[start.sh] playit exited, restarting in 5s..."
-    sleep 5
-done &
+# Start playit inside a detached tmux session with a real TTY
+# -d = detached, -s = session name
+tmux new-session -d -s playit \
+    'export TERM=xterm; /usr/local/bin/playit >> /data/logs/playit.log 2>&1'
 
-# Start PocketMine-MP and redirect its logs so server.py can read them
+echo "[start.sh] playit started inside tmux session"
+
+# Also tail tmux's own log just in case
+tmux pipe-pane -t playit -o 'cat >> /data/logs/playit.log'
+
+# Start PocketMine-MP with log redirection
 exec "$PHP_BIN" /server/PocketMine-MP.phar \
     --no-wizard \
     --data=/data \

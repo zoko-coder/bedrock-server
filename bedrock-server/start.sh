@@ -1,18 +1,9 @@
 #!/bin/bash
 
-mkdir -p /data/logs
+mkdir -p /data/plugins /data/logs /data/worlds
 
-# Copy BDS files on first run
-if [ ! -f /data/bedrock_server ]; then
-    echo "[start.sh] Copying Bedrock Server to /data..."
-    cp -r /server/bedrock/* /data/
-fi
-
-# Accept EULA (required!)
-echo "eula=true" > /data/eula.txt
-
-# Overwrite server.properties with public-friendly settings
-cat > /data/server.properties << 'EOF'
+if [ ! -f /data/server.properties ]; then
+    cat > /data/server.properties << 'EOF'
 server-name=My Bedrock Server
 gamemode=survival
 difficulty=normal
@@ -38,22 +29,35 @@ player-movement-duration-threshold-in-ms=500
 correct-player-movement=false
 server-authoritative-block-breaking=false
 EOF
+fi
 
-echo "[start.sh] server.properties updated"
+echo "eula=true" > /data/eula.txt
 
 # Start web dashboard
 python3 /server.py &
 
 sleep 2
 
+# Restore world from Telegram if missing
+LEVEL_NAME=$(grep '^level-name=' /data/server.properties | cut -d'=' -f2)
+WORLD_PATH="/data/worlds/$LEVEL_NAME"
+
+if [ ! -d "$WORLD_PATH" ] || [ -z "$(ls -A "$WORLD_PATH" 2>/dev/null)" ]; then
+    echo "[start.sh] World missing, attempting Telegram restore..."
+    python3 /backup.py restore || echo "[start.sh] Restore skipped"
+fi
+
 # Start playit
 tmux new-session -d -s playit \
     'export TERM=xterm; /usr/local/bin/playit >> /data/logs/playit.log 2>&1'
 tmux pipe-pane -t playit -o 'cat >> /data/logs/playit.log'
-
 echo "[start.sh] playit started"
 
-# Start Bedrock Dedicated Server
+# Start backup daemon
+python3 /backup.py &
+echo "[start.sh] Backup daemon started"
+
+# Start Bedrock Server
 cd /data
 echo "[start.sh] Starting Bedrock Server..."
 LD_LIBRARY_PATH=. ./bedrock_server >> /data/logs/server.log 2>&1

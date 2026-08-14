@@ -230,6 +230,16 @@ class BDSBackup:
             data = {'chat_id': CHANNEL_ID, 'caption': caption, 'parse_mode': 'HTML'}
             return self.tg_api('sendDocument', data=data, files=files)
 
+    def edit_caption(self, message_id, caption):
+        return self.tg_api('editMessageCaption', data={
+            'chat_id': CHANNEL_ID, 'message_id': message_id, 'caption': caption, 'parse_mode': 'HTML'
+        })
+
+    def edit_text(self, message_id, text):
+        return self.tg_api('editMessageText', data={
+            'chat_id': CHANNEL_ID, 'message_id': message_id, 'text': text, 'parse_mode': 'HTML'
+        })
+
     def delete_messages(self, message_ids):
         deleted, failed = [], []
         for mid in message_ids:
@@ -272,13 +282,14 @@ class BDSBackup:
             current_sig = self.get_world_signature(world_path)
             last_sig = self.state.get('last_world_signature')
 
-            if last_sig and last_sig == list(current_sig):
-                print(f"[Backup] World unchanged (size={current_sig[0]}, files={current_sig[1]}, hash={current_sig[3][:8]}), skipping")
-                self.player_has_played = False  # Reset — world didn't actually change
+            # Skip if world is basically empty (< 500 KB)
+            if current_sig[0] < 500 * 1024:
+                print(f"[Backup] World nearly empty ({current_sig[0]/1024:.0f} KB), skipping")
+                self.player_has_played = False
                 return
 
             # Skip if world is basically empty/fresh (< 5 MB = unplayed BDS world)
-            if current_sig[0] < 5 * 1024 * 1024:
+            if current_sig[0] < 1 * 1024 * 1024:
                 print(f"[Backup] World too small ({current_sig[0]/1024/1024:.1f} MB < 5 MB threshold), skipping")
                 self.player_has_played = False  # Reset — not a real world
                 return
@@ -378,7 +389,7 @@ class BDSBackup:
                     shutil.rmtree(chunk_dir)
 
     def clean_old_backups(self):
-        """Keep only last 2 backups. Try to delete old ones, tag failures with #delete."""
+        """Keep only last 2 backups. Try to delete old ones; if delete fails (>48h old), edit caption/text to mark [SUPERSEDED]."""
         backups = self.state['backups']
         if len(backups) <= 2:
             return
@@ -394,30 +405,41 @@ class BDSBackup:
                 print(f"[Backup] Deleted {len(deleted)} messages for old backup {old['name']}")
 
             if failed:
-                # Tag the failed messages with #delete so they can be found manually
-                self._tag_for_deletion(old, failed)
-                # Queue for retry on next backup cycle
+                # Mark failed messages as [SUPERSEDED] by editing their captions/text directly
+                self.mark_as_superseded(old, failed)
                 old['failed_ids'] = failed
                 old['retry_count'] = old.get('retry_count', 0)
                 old['first_failed'] = old.get('first_failed', time.time())
                 self.state['pending_deletions'].append(old)
-                print(f"[Backup] {len(failed)} messages couldn't be deleted for {old['name']}, queued for retry")
+                print(f"[Backup] {len(failed)} messages marked as SUPERSEDED for {old['name']}")
 
         self.state['backups'] = kept
 
-    def _tag_for_deletion(self, backup_record, failed_ids):
+    def mark_as_superseded(self, backup_record, message_ids):
         """
-        Send a #delete tagged message listing un-deletable message IDs.
-        This lets channel admins search for #delete and clean up manually.
+        Edits the caption/text of old backup chunk messages and manifest to mark them [SUPERSEDED].
+        Telegram allows bots to edit their own message captions/text regardless of age (even > 48h).
+        Includes #delete tag directly in caption/text for easy Telegram channel search.
         """
-        self.send_text(
-            f"🗑 #delete\n"
-            f"<b>Old backup needs manual cleanup</b>\n"
-            f"Backup: <code>{backup_record['name']}</code>\n"
-            f"Messages to delete: <code>{', '.join(str(x) for x in failed_ids)}</code>\n"
-            f"<i>Bot cannot delete these (likely older than 48h).</i>\n"
-            f"Search #delete in this channel to find all pending cleanups."
-        )
+        manifest_id = backup_record.get('manifest_id')
+        name = backup_record.get('name', 'unknown')
+
+        for mid in message_ids:
+            if mid == manifest_id:
+                self.edit_text(
+                    mid,
+                    f"🗑 <b>[SUPERSEDED MANIFEST]</b>\n"
+                    f"Backup: <code>{name}</code>\n"
+                    f"<i>This backup manifest has been replaced by a newer backup. Safe to ignore or delete. #delete #superseded</i>"
+                )
+            else:
+                self.edit_caption(
+                    mid,
+                    f"🗑 <b>[SUPERSEDED CHUNK]</b>\n"
+                    f"Backup: <code>{name}</code>\n"
+                    f"<i>This backup chunk is obsolete and replaced by a newer backup. Safe to ignore or delete. #delete #superseded</i>"
+                )
+            time.sleep(0.5)
 
     def retry_pending_deletions(self):
         """Retry deleting messages that failed previously."""
@@ -434,18 +456,19 @@ class BDSBackup:
             retry_count = entry.get('retry_count', 0) + 1
             entry['retry_count'] = retry_count
 
-            # Stop retrying after 10 attempts (messages are definitely too old)
-            if retry_count > 10:
-                print(f"[Backup] Giving up on deleting {entry.get('name', '?')} after {retry_count} retries")
-                continue
-
             deleted, failed = self.delete_messages(failed_ids)
             if deleted:
                 print(f"[Backup] Retry success: deleted {len(deleted)} messages for {entry.get('name', '?')}")
 
             if failed:
-                entry['failed_ids'] = failed
-                still_pending.append(entry)
+                # Ensure messages are marked as SUPERSEDED
+                self.mark_as_superseded(entry, failed)
+                # Cease deletion retries after 5 attempts since caption is already marked SUPERSEDED
+                if retry_count >= 5:
+                    print(f"[Backup] Ceasing delete retries for {entry.get('name', '?')} (marked SUPERSEDED in channel)")
+                else:
+                    entry['failed_ids'] = failed
+                    still_pending.append(entry)
             else:
                 print(f"[Backup] All messages deleted for {entry.get('name', '?')}")
 

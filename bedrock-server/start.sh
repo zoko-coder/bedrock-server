@@ -5,13 +5,11 @@ mkdir -p /data/logs /data/worlds
 # ── Graceful shutdown handler ────────────────────────────────────────────────
 shutdown() {
     echo "[start.sh] Shutdown signal received..."
-    # Try to save BDS world gracefully
     if [ -n "$BDS_PID" ] && kill -0 "$BDS_PID" 2>/dev/null; then
         echo "[start.sh] Stopping BDS (PID $BDS_PID)..."
         kill -TERM "$BDS_PID" 2>/dev/null
         wait "$BDS_PID" 2>/dev/null
     fi
-    # Kill all background jobs
     kill $(jobs -p) 2>/dev/null
     wait 2>/dev/null
     echo "[start.sh] Clean shutdown complete."
@@ -61,7 +59,6 @@ EOF
 fi
 
 # ── ALWAYS force open-access settings on every boot ──────────────────────────
-# Prevents stale server.properties from blocking connections ("not invited" error)
 sed -i 's/^online-mode=.*/online-mode=false/' /data/server.properties
 sed -i 's/^allow-list=.*/allow-list=false/' /data/server.properties
 sed -i 's/^white-list=.*/white-list=false/' /data/server.properties
@@ -99,9 +96,22 @@ sleep 2
 python3 /backup.py >> /data/logs/backup.log 2>&1 &
 echo "[start.sh] Backup daemon started"
 
-# ── Start playit tunnel ───────────────────────────────────────────────────────
-/usr/local/bin/playit >> /data/logs/playit.log 2>&1 &
-echo "[start.sh] playit started (PID $!)"
+# ── Start playit tunnel (inside tmux + auto-restart) ──────────────────────────
+start_playit() {
+    while true; do
+        echo "[start.sh] (Re)starting playit in tmux..."
+        tmux new-session -d -s playit \
+            'export TERM=xterm; /usr/local/bin/playit' \
+            2>/dev/null || tmux send-keys -t playit C-c 2>/dev/null
+        while tmux has-session -t playit 2>/dev/null; do
+            sleep 10
+        done
+        echo "[start.sh] playit died, restarting in 5s..."
+        sleep 5
+    done
+}
+start_playit >> /data/logs/playit.log 2>&1 &
+echo "[start.sh] playit monitor started"
 
 # ── Start Bedrock Server (foreground — keeps container alive) ─────────────────
 cd /data
@@ -111,6 +121,5 @@ export LD_LIBRARY_PATH=.
 BDS_PID=$!
 echo "[start.sh] BDS started (PID $BDS_PID)"
 
-# Wait for BDS to exit (or shutdown signal)
 wait "$BDS_PID"
 echo "[start.sh] BDS exited."

@@ -132,8 +132,8 @@ def follow_file(path, label, target_list, max_lines=80):
                         if ':' not in tunnel_address:
                             tunnel_address += ":19132"
 
-                    joined = re.search(r'Player (?:connected|Spawned):\s*([^,]+)', line)
-                    left   = re.search(r'Player disconnected:\s*([^,]+)', line)
+                    joined = re.search(r'Player (?:connected|Spawned):\s*(.+?)(?:\s+xuid:|,|$)', line)
+                    left   = re.search(r'Player disconnected:\s*(.+?)(?:\s+xuid:|,|$)', line)
                     if joined:
                         name = joined.group(1).strip()
                         if name not in online_players:

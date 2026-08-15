@@ -109,6 +109,7 @@ def follow_file(path, label, target_list, max_lines=80):
         time.sleep(2)
 
     with open(path, "r", encoding="utf-8", errors="replace") as f:
+        f.seek(0, 2)  # Seek to end of file to read only live new events
         while True:
             line = f.readline()
             if line:
@@ -560,6 +561,8 @@ class Handler(BaseHTTPRequestHandler):
         metrics = get_metrics()
 
         with lock:
+            if not metrics.get("bds_running", False):
+                online_players.clear()
             players = list(online_players)
             srv_lines = list(recent_server_lines)
             ply_lines = list(recent_playit_lines)

@@ -32,7 +32,7 @@ if [ ! -f /data/server.properties ]; then
 server-name=My Bedrock Server
 gamemode=survival
 difficulty=normal
-allow-cheats=false
+allow-cheats=true
 max-players=5
 server-port=19132
 server-portv6=19133

@@ -117,6 +117,7 @@ echo "[start.sh] playit monitor started"
 cd /data
 echo "[start.sh] Starting Bedrock Server..."
 export LD_LIBRARY_PATH=.
+export MALLOC_ARENA_MAX=2
 ./bedrock_server >> /data/logs/server.log 2>&1 &
 BDS_PID=$!
 echo "[start.sh] BDS started (PID $BDS_PID)"

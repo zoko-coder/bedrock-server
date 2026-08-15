@@ -17,6 +17,7 @@ import hashlib
 import shutil
 import threading
 import requests
+import subprocess
 from datetime import datetime
 
 BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -197,12 +198,9 @@ class BDSBackup:
     def compress_world(self, world_path, zip_path):
         print(f"[Backup] Compressing: {world_path}")
         os.makedirs(os.path.dirname(zip_path), exist_ok=True)
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for root, dirs, files in os.walk(world_path):
-                for file in files:
-                    fp = os.path.join(root, file)
-                    arcname = os.path.relpath(fp, os.path.dirname(world_path))
-                    zf.write(fp, arcname)
+        world_name = os.path.basename(world_path)
+        parent = os.path.dirname(world_path)
+        subprocess.run(["zip", "-q", "-r", "-1", zip_path, world_name], cwd=parent, check=True)
         size = os.path.getsize(zip_path)
         print(f"[Backup] Compressed: {size/1024/1024:.1f} MB")
         return size

@@ -1,13 +1,14 @@
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y \
-    wget curl unzip \
+    wget curl unzip zip \
     python3 python3-requests \
     ca-certificates libcurl4 libssl3 \
     libstdc++6 libgcc-s1 procps tmux \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /server
+ENV MALLOC_ARENA_MAX=2
 
 COPY bedrock-server.zip /tmp/bedrock.zip
 RUN mkdir -p /server/bedrock && \

@@ -5,11 +5,91 @@ import time
 import subprocess
 import json
 import signal
+import hmac
+import hashlib
+import secrets
+import urllib.parse
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT = int(os.environ.get("PORT", 10000))
 SERVER_LOG = "/data/logs/server.log"
 PLAYIT_LOG = "/data/logs/playit.log"
+DASHBOARD_USER = os.environ.get("DASHBOARD_USERNAME", "").strip()
+DASHBOARD_PASS = os.environ.get("DASHBOARD_PASSWORD", "").strip()
+SECRET_KEY = secrets.token_hex(16)
+
+
+def get_auth_token():
+    if not DASHBOARD_USER or not DASHBOARD_PASS:
+        return None
+    return hmac.new(SECRET_KEY.encode(), f"{DASHBOARD_USER}:{DASHBOARD_PASS}".encode(), hashlib.sha256).hexdigest()
+
+
+def is_authenticated(headers):
+    expected = get_auth_token()
+    if not expected:
+        return True  # Auth disabled if env vars are not set
+    cookie_str = headers.get("Cookie", "")
+    if cookie_str:
+        cookie = SimpleCookie()
+        try:
+            cookie.load(cookie_str)
+            if "auth_token" in cookie:
+                return hmac.compare_digest(cookie["auth_token"].value, expected)
+        except Exception:
+            pass
+    return False
+
+
+def build_login_html(error_msg=""):
+    err_html = f'<div style="color:#ef4444;background:#2a0a0a;border:1px solid #7f1d1d;padding:8px 12px;border-radius:6px;margin-bottom:16px;font-size:13px;">{error_msg}</div>' if error_msg else ''
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dashboard Login</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Inter:wght@400;500;600&display=swap');
+  *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  :root {{
+    --bg:#0d0f14; --surface:#161920; --border:#252830; --text:#e2e8f0; --muted:#64748b;
+    --blue:#3b82f6; --red:#ef4444; --mono:'IBM Plex Mono',monospace; --sans:'Inter',sans-serif;
+  }}
+  body {{ background:var(--bg); color:var(--text); font-family:var(--sans); font-size:14px; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:16px; }}
+  .login-card {{ background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:32px; width:100%; max-width:380px; box-shadow:0 10px 25px rgba(0,0,0,0.5); }}
+  .header-icon {{ font-size:36px; text-align:center; margin-bottom:8px; }}
+  .login-title {{ font-size:20px; font-weight:600; text-align:center; margin-bottom:4px; }}
+  .login-sub {{ font-size:12px; color:var(--muted); text-align:center; font-family:var(--mono); margin-bottom:24px; }}
+  .form-group {{ margin-bottom:16px; }}
+  .form-label {{ display:block; font-size:11px; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted); margin-bottom:6px; }}
+  .form-input {{ width:100%; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px 14px; color:var(--text); font-family:var(--mono); font-size:14px; outline:none; transition:border 0.15s; }}
+  .form-input:focus {{ border-color:var(--blue); }}
+  .submit-btn {{ width:100%; background:var(--blue); color:#fff; padding:10px; border:none; border-radius:6px; font-weight:600; font-size:14px; cursor:pointer; margin-top:8px; }}
+  .submit-btn:hover {{ opacity:0.9; }}
+</style>
+</head>
+<body>
+<div class="login-card">
+  <div class="header-icon">🔒</div>
+  <div class="login-title">Bedrock Server</div>
+  <div class="login-sub">Authentication Required</div>
+  {err_html}
+  <form method="POST" action="/login">
+    <div class="form-group">
+      <label class="form-label">Username</label>
+      <input type="text" name="username" class="form-input" required autofocus>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Password</label>
+      <input type="password" name="password" class="form-input" required>
+    </div>
+    <button type="submit" class="submit-btn">Login →</button>
+  </form>
+</div>
+</body>
+</html>"""
 
 claim_link = None
 tunnel_address = None
@@ -231,6 +311,8 @@ def build_html(metrics, players, server_lines, playit_lines, tunnel, claim, rest
             <pre class="log-pre" id="log-{label.lower().replace(' ','_')}">{content}</pre>
         </div>"""
 
+    logout_html = '<a href="/logout" style="margin-left:auto;color:var(--red);text-decoration:none;font-size:12px;font-weight:600;border:1px solid #7f1d1d;padding:6px 12px;border-radius:6px;background:#2a0a0a;">Logout 🚪</a>' if (DASHBOARD_USER and DASHBOARD_PASS) else ''
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -306,6 +388,7 @@ def build_html(metrics, players, server_lines, playit_lines, tunnel, claim, rest
     <h1>Bedrock Server</h1>
     <div class="header-sub">dashboard · auto-refresh 15s</div>
   </div>
+  {logout_html}
 </div>
 
 {restart_banner}
@@ -433,6 +516,37 @@ def build_html(metrics, players, server_lines, playit_lines, tunnel, claim, rest
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path == "/login":
+            if is_authenticated(self.headers):
+                self.send_response(302)
+                self.send_header("Location", "/")
+                self.end_headers()
+            else:
+                body = build_login_html().encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            return
+
+        if self.path == "/logout":
+            self.send_response(302)
+            self.send_header("Set-Cookie", "auth_token=; Path=/; Max-Age=0")
+            self.send_header("Location", "/login")
+            self.end_headers()
+            return
+
+        if not is_authenticated(self.headers):
+            if self.path == "/metrics":
+                self.send_response(401)
+                self.end_headers()
+            else:
+                self.send_response(302)
+                self.send_header("Location", "/login")
+                self.end_headers()
+            return
+
         if self.path == "/metrics":
             m = get_metrics()
             body = json.dumps(m).encode()
@@ -462,6 +576,33 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
+        if self.path == "/login":
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length).decode('utf-8')
+            params = urllib.parse.parse_qs(body)
+            user = params.get('username', [''])[0]
+            pwd = params.get('password', [''])[0]
+
+            if DASHBOARD_USER and DASHBOARD_PASS and user == DASHBOARD_USER and pwd == DASHBOARD_PASS:
+                token = get_auth_token()
+                self.send_response(302)
+                self.send_header("Set-Cookie", f"auth_token={token}; Path=/; HttpOnly; SameSite=Lax")
+                self.send_header("Location", "/")
+                self.end_headers()
+            else:
+                resp = build_login_html("Invalid username or password").encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
+            return
+
+        if not is_authenticated(self.headers):
+            self.send_response(401)
+            self.end_headers()
+            return
+
         if self.path == "/restart":
             with lock:
                 restart_status["restarting"] = True
@@ -474,10 +615,22 @@ class Handler(BaseHTTPRequestHandler):
                 os.kill(pid, signal.SIGTERM)
                 killed = True
                 print(f"[server.py] Sent SIGTERM to bedrock_server (PID {pid})")
+                time.sleep(3)  # Wait for BDS to flush world files to disk
             except Exception as e:
                 print(f"[server.py] Failed to kill BDS: {e}")
 
-            body = b"Restart triggered" if killed else b"Failed to find BDS process"
+            # Pre-restart backup using existing perform_backup() in backup.py
+            try:
+                print("[server.py] Running pre-restart Telegram backup...")
+                from backup import BDSBackup
+                bot = BDSBackup()
+                bot.startup_check()
+                bot.perform_backup()
+                print("[server.py] Pre-restart Telegram backup complete!")
+            except Exception as e:
+                print(f"[server.py] Pre-restart backup error: {e}")
+
+            body = b"Restart triggered with pre-restart backup" if killed else b"Failed to find BDS process"
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
             self.send_header("Content-Length", str(len(body)))

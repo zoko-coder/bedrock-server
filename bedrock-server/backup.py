@@ -42,6 +42,17 @@ class BDSBackup:
         self.lock = threading.Lock()
         self._stop = False
         self.telegram_ok = False
+        self.backup_in_progress = False
+
+    def send_bds_command(self, cmd):
+        """Send a console command to the running BDS server."""
+        try:
+            with open('/tmp/bds_stdin', 'w') as f:
+                f.write(cmd + '\n')
+                f.flush()
+            print(f"[Backup] BDS command: {cmd}")
+        except Exception as e:
+            print(f"[Backup] BDS command failed: {e}")
 
     def load_state(self):
         if os.path.exists(STATE_FILE):
@@ -164,13 +175,20 @@ class BDSBackup:
                         if not line:
                             time.sleep(1)
                             continue
-                        if 'Player connected:' in line:
-                            m = re.search(r'Player connected:\s*(\w+)', line)
+                        if 'Player connected:' in line or 'Player Spawned:' in line:
+                            m = re.search(r'Player (?:connected|Spawned):\s*(.+?)(?:\s+xuid:|,|$)', line)
                             if m:
-                                self.players.add(m.group(1))
-                                self.player_has_played = True  # FIX 1: mark that someone played
+                                name = m.group(1).strip()
+                                self.players.add(name)
+                                self.player_has_played = True
                                 self.last_activity = time.time()
-                                print(f"[Backup] +Player {m.group(1)} | total:{len(self.players)}")
+                                print(f"[Backup] +Player {name} | total:{len(self.players)}")
+
+                                # NEW: Kick anyone who tries to connect during backup
+                                if self.backup_in_progress:
+                                    time.sleep(1)  # Let them finish spawning so kick works
+                                    self.send_bds_command(f'kick "{name}" Server is backing up world data. Please reconnect in 1 minute.')
+                                    print(f"[Backup] Kicked {name} (backup in progress)")
                         elif 'Player disconnected:' in line:
                             m = re.search(r'Player disconnected:\s*(\w+)', line)
                             if m:
@@ -269,11 +287,22 @@ class BDSBackup:
 
     def perform_backup(self):
         with self.lock:
+            self.backup_in_progress = True
+            self.send_bds_command("say Starting world backup...")
+
             level = self.get_level_name()
             world_path = os.path.join('/data/worlds', level)
 
             if not os.path.exists(world_path):
                 print(f"[Backup] World not found: {world_path}")
+                self.backup_in_progress = False
+                return
+
+            # Race-condition guard: double-check no one sneaked in
+            if self.players:
+                print(f"[Backup] Players connected ({len(self.players)}), aborting backup")
+                self.send_bds_command("say Backup aborted — players reconnected.")
+                self.backup_in_progress = False
                 return
 
             # --- Deduplication via world signature ---
@@ -284,12 +313,14 @@ class BDSBackup:
             if current_sig[0] < 500 * 1024:
                 print(f"[Backup] World nearly empty ({current_sig[0]/1024:.0f} KB), skipping")
                 self.player_has_played = False
+                self.backup_in_progress = False
                 return
 
             # Skip if world is basically empty/fresh (< 5 MB = unplayed BDS world)
             if current_sig[0] < 1 * 1024 * 1024:
                 print(f"[Backup] World too small ({current_sig[0]/1024/1024:.1f} MB < 5 MB threshold), skipping")
                 self.player_has_played = False  # Reset — not a real world
+                self.backup_in_progress = False
                 return
 
             print(f"[Backup] World changed! size={current_sig[0]/1024/1024:.1f}MB files={current_sig[1]} hash={current_sig[3][:8]}")
@@ -381,6 +412,8 @@ class BDSBackup:
                 print(f"[Backup] Complete: {name}")
 
             finally:
+                self.backup_in_progress = False
+                self.send_bds_command("say World backup complete!")
                 if os.path.exists(zip_path):
                     os.remove(zip_path)
                 if os.path.exists(chunk_dir):

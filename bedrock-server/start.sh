@@ -113,21 +113,30 @@ start_playit() {
 start_playit >> /data/logs/playit.log 2>&1 &
 echo "[start.sh] playit monitor started"
 
-# ── Start Bedrock Server with command feeder ──────────────────────────────────
+# ── Start Bedrock Server with console FIFO ────────────────────────────────────
 cd /data
 echo "[start.sh] Starting Bedrock Server..."
 
-# Feed commands to BDS stdin after it boots
-{
-    sleep 15
-    echo "gamerule showcoordinates true"
-    echo "say Coordinates enabled!"
-    # Keep stdin alive so BDS doesn't get EOF
-    while true; do sleep 3600; done
-} | ./bedrock_server >> /data/logs/server.log 2>&1 &
+# Create FIFO for sending console commands to BDS
+mkfifo /tmp/bds_stdin 2>/dev/null || true
 
+export LD_LIBRARY_PATH=.
+export MALLOC_ARENA_MAX=2
+
+# Start BDS reading from FIFO
+./bedrock_server < /tmp/bds_stdin >> /data/logs/server.log 2>&1 &
 BDS_PID=$!
 echo "[start.sh] BDS started (PID $BDS_PID)"
+
+# Keep FIFO write-end open so BDS never gets EOF
+exec 3>/tmp/bds_stdin
+
+# Auto-send gamerule command at startup
+(
+    sleep 15
+    echo "gamerule showcoordinates true" > /tmp/bds_stdin
+    echo "say Coordinates enabled!" > /tmp/bds_stdin
+) &
 
 wait "$BDS_PID"
 echo "[start.sh] BDS exited."

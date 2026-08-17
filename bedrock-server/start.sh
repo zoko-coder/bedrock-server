@@ -113,12 +113,19 @@ start_playit() {
 start_playit >> /data/logs/playit.log 2>&1 &
 echo "[start.sh] playit monitor started"
 
-# ── Start Bedrock Server (foreground — keeps container alive) ─────────────────
+# ── Start Bedrock Server with command feeder ──────────────────────────────────
 cd /data
 echo "[start.sh] Starting Bedrock Server..."
-export LD_LIBRARY_PATH=.
-export MALLOC_ARENA_MAX=2
-./bedrock_server >> /data/logs/server.log 2>&1 &
+
+# Feed commands to BDS stdin after it boots
+{
+    sleep 15
+    echo "gamerule showcoordinates true"
+    echo "say Coordinates enabled!"
+    # Keep stdin alive so BDS doesn't get EOF
+    while true; do sleep 3600; done
+} | ./bedrock_server >> /data/logs/server.log 2>&1 &
+
 BDS_PID=$!
 echo "[start.sh] BDS started (PID $BDS_PID)"
 

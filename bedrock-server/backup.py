@@ -22,7 +22,7 @@ from datetime import datetime
 
 BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 CHANNEL_ID = os.environ.get('TELEGRAM_CHANNEL_ID')
-CHECK_INTERVAL = 300       # 5 minutes
+CHECK_INTERVAL = 600       # 10 minutes
 BACKUP_INTERVAL = 1800     # 30 min between backups
 IDLE_MINUTES = 5
 CHUNK_SIZE = 10 * 1024 * 1024  # 10MB
@@ -218,7 +218,12 @@ class BDSBackup:
         os.makedirs(os.path.dirname(zip_path), exist_ok=True)
         world_name = os.path.basename(world_path)
         parent = os.path.dirname(world_path)
-        subprocess.run(["zip", "-q", "-r", "-1", zip_path, world_name], cwd=parent, check=True)
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
+            for dirpath, dirnames, filenames in os.walk(world_path):
+                for fname in filenames:
+                    full_path = os.path.join(dirpath, fname)
+                    arcname = os.path.relpath(full_path, parent)
+                    zf.write(full_path, arcname)
         size = os.path.getsize(zip_path)
         print(f"[Backup] Compressed: {size/1024/1024:.1f} MB")
         return size

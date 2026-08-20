@@ -92,10 +92,6 @@ echo "[start.sh] Web dashboard started"
 
 sleep 2
 
-# ── Start backup daemon ───────────────────────────────────────────────────────
-python3 /backup.py >> /data/logs/backup.log 2>&1 &
-echo "[start.sh] Backup daemon started"
-
 # ── Start playit tunnel (inside tmux + auto-restart) ──────────────────────────
 start_playit() {
     while true; do
@@ -121,7 +117,7 @@ echo "[start.sh] Starting Bedrock Server..."
 mkfifo /tmp/bds_stdin 2>/dev/null || true
 
 export LD_LIBRARY_PATH=.
-export MALLOC_ARENA_MAX=2
+export MALLOC_ARENA_MAX=1
 
 # Start BDS reading from FIFO
 ./bedrock_server < /tmp/bds_stdin >> /data/logs/server.log 2>&1 &

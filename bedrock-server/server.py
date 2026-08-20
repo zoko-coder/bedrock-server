@@ -97,6 +97,7 @@ recent_server_lines = []
 recent_playit_lines = []
 online_players = []
 restart_status = {"restarting": False, "time": 0}
+backup_instance = None  # Set at startup, used by restart handler
 lock = threading.Lock()
 
 
@@ -147,6 +148,24 @@ def follow_file(path, label, target_list, max_lines=80):
 
 
 START_TIME = time.time()
+
+
+def find_pids_by_name(name):
+    """Pure-Python replacement for `pgrep -x <name>`. Scans /proc."""
+    pids = []
+    try:
+        for entry in os.listdir('/proc'):
+            if entry.isdigit():
+                try:
+                    with open(f'/proc/{entry}/comm') as f:
+                        if f.read().strip() == name:
+                            pids.append(int(entry))
+                except (OSError, ValueError):
+                    pass
+    except OSError:
+        pass
+    return pids
+
 
 # ── System metrics ────────────────────────────────────────────────────────────
 
@@ -232,8 +251,7 @@ def get_metrics():
         metrics["uptime"] = "—"
 
     try:
-        out = subprocess.check_output(["pgrep", "-x", "bedrock_server"], text=True)
-        metrics["bds_running"] = bool(out.strip())
+        metrics["bds_running"] = len(find_pids_by_name("bedrock_server")) > 0
     except Exception:
         metrics["bds_running"] = False
 
@@ -614,7 +632,10 @@ class Handler(BaseHTTPRequestHandler):
             # Kill bedrock_server -> start.sh exits -> Render restarts container
             killed = False
             try:
-                pid = int(subprocess.check_output(["pgrep", "-x", "bedrock_server"], text=True).strip().split()[0])
+                pids = find_pids_by_name("bedrock_server")
+                if not pids:
+                    raise RuntimeError("No bedrock_server process found")
+                pid = pids[0]
                 os.kill(pid, signal.SIGTERM)
                 killed = True
                 print(f"[server.py] Sent SIGTERM to bedrock_server (PID {pid})")
@@ -622,14 +643,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 print(f"[server.py] Failed to kill BDS: {e}")
 
-            # Pre-restart backup using existing perform_backup() in backup.py
+            # Pre-restart backup using the running backup instance
             try:
                 print("[server.py] Running pre-restart Telegram backup...")
-                from backup import BDSBackup
-                bot = BDSBackup()
-                bot.startup_check()
-                bot.perform_backup()
-                print("[server.py] Pre-restart Telegram backup complete!")
+                if backup_instance and backup_instance.telegram_ok:
+                    backup_instance.perform_backup()
+                    print("[server.py] Pre-restart Telegram backup complete!")
+                else:
+                    print("[server.py] Backup instance not available, skipping pre-restart backup")
             except Exception as e:
                 print(f"[server.py] Pre-restart backup error: {e}")
 
@@ -652,6 +673,16 @@ class Handler(BaseHTTPRequestHandler):
 
 threading.Thread(target=follow_file, args=(SERVER_LOG, "BDS", recent_server_lines), daemon=True).start()
 threading.Thread(target=follow_file, args=(PLAYIT_LOG, "PLAYIT", recent_playit_lines), daemon=True).start()
+
+# ── Start backup daemon in-process ───────────────────────────────────────────────
+
+try:
+    from backup import BDSBackup
+    backup_instance = BDSBackup()
+    threading.Thread(target=backup_instance.run, daemon=True).start()
+    print("[server.py] Backup daemon started (in-process)")
+except Exception as e:
+    print(f"[server.py] Backup daemon failed to start: {e}")
 
 server = HTTPServer(("0.0.0.0", PORT), Handler)
 print(f"[server.py] Dashboard on port {PORT}")
